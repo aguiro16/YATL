@@ -20,6 +20,7 @@ CFG = {
     "scan_interval":60,"timeframe":"1h","auto_trade":False,
     "trade_amount":20,
 }
+
 def ema(data, period):
     if len(data) < period: return None
     k = 2/(period+1)
@@ -62,16 +63,19 @@ def macd(closes):
     if len(closes) < 35: return None, None
     fh = ema_history(closes,12)
     sh = ema_history(closes,26)
-    ma = [f-s for f,s in zip(fh,sh) if f and s]
+    ma = [f-s for f,s in zip(fh,sh) if f is not None and s is not None]
     if len(ma) < 9: return None, None
     return ma[-1], ema(ma,9)
+
 def run_ghp(klines):
     if not klines or len(klines) < 60: return None
-    H=[float(k[2]) for k in klines]
-    L=[float(k[3]) for k in klines]
-    C=[float(k[4]) for k in klines]
-    V=[float(k[5]) for k in klines]
-    O=[float(k[1]) for k in klines]
+    try:
+        H=[float(k[2]) for k in klines]
+        L=[float(k[3]) for k in klines]
+        C=[float(k[4]) for k in klines]
+        V=[float(k[5]) for k in klines]
+        O=[float(k[1]) for k in klines]
+    except: return None
     n=len(C)
     atr_v=atr(H,L,C,CFG["atr_len"])
     rsi_v=rsi(C,CFG["rsi_len"])
@@ -84,19 +88,19 @@ def run_ghp(klines):
     sh=ema_history(C,CFG["ema_slow"])
     pf=fh[-2] if len(fh)>=2 else None
     ps=sh[-2] if len(sh)>=2 else None
-    cross=pf and ps and pf<=ps and ef>es
+    cross=bool(pf and ps and pf<=ps and ef and es and ef>es)
     cl=C[-1]; op=O[-1]; pc=C[-2]; po=O[-2]; vol=V[-1]
-    hv=va and vol>va*CFG["vol_mult"]
-    rh=rsi_v and 50<rsi_v<CFG["rsi_ob"]
-    at=et and cl>et
-    mb=mv and ms and mv>ms
-    be=cl>op and pc<po and cl>po and op<pc
+    hv=bool(va and vol>va*CFG["vol_mult"])
+    rh=bool(rsi_v and 50<rsi_v<CFG["rsi_ob"])
+    at=bool(et and cl>et)
+    mb=bool(mv and ms and mv>ms)
+    be=bool(cl>op and pc<po and cl>po and op<pc)
     body=abs(cl-op)
-    bodies=[abs(C[i]-O[i]) for i in range(n-11,n-1)]
+    bodies=[abs(C[i]-O[i]) for i in range(max(0,n-11),n-1)]
     ab=sum(bodies)/len(bodies) if bodies else 1
-    sc=body>ab*1.3 and cl>op
+    sc=bool(body>ab*1.3 and cl>op)
     h20=max(H[-21:-1]) if len(H)>=21 else H[-1]
-    br=H[-1]>=h20 and cl>op
+    br=bool(H[-1]>=h20 and cl>op)
     score=0
     if cross: score+=2
     if hv: score+=2
@@ -107,7 +111,7 @@ def run_ghp(klines):
     if sc: score+=1
     if br: score+=1
     st=5 if score>=8 else 4 if score>=6 else 3 if score>=4 else 2 if score>=3 else 1
-    buy=cross and rh and hv and at and mb and (be or sc) and st>=CFG["min_strength"]
+    buy=bool(cross and rh and hv and at and mb and (be or sc) and st>=CFG["min_strength"])
     if not atr_v: return None
     tp1=cl+atr_v*CFG["tp1_mult"]
     tp2=cl+atr_v*CFG["tp2_mult"]
@@ -120,15 +124,23 @@ def run_ghp(klines):
     return {"buy":buy,"strength":st,"score":score,"close":cl,
             "tp1":tp1,"tp2":tp2,"tp3":tp3,"sl":sl,
             "tp1p":t1p,"tp2p":t2p,"tp3p":t3p,"slp":slp,"rr":rr,
-            "rsi":rsi_v,"vr":vr,"at":at,"mb":mb,"hv":hv,"rh":rh}
+            "rsi":rsi_v,"vr":vr}
 
 def get_top_pairs():
-    r=requests.get(f"{BINANCE_BASE}/api/v3/ticker/24hr",timeout=10).json()
-    f=[t for t in r if isinstance(t, dict) and t.get("symbol","").endswith("USDT") and not any(x in t.get("symbol","") for x in ["DOWN","UP","BEAR","BULL"])]
-  return [t["symbol"] for t in sorted(f,key=lambda x:float(x["quoteVolume"]),reverse=True)[:CFG["top_n"]]]
+    try:
+        r=requests.get(f"{BINANCE_BASE}/api/v3/ticker/24hr",timeout=15).json()
+        if not isinstance(r, list): return []
+        f=[t for t in r if isinstance(t,dict) and isinstance(t.get("symbol",""),str) and t.get("symbol","").endswith("USDT") and not any(x in t.get("symbol","") for x in ["DOWN","UP","BEAR","BULL"])]
+        return [t["symbol"] for t in sorted(f,key=lambda x:float(x.get("quoteVolume",0)),reverse=True)[:CFG["top_n"]]]
+    except Exception as e:
+        print(f"خطأ get_top_pairs: {e}")
+        return []
 
 def get_klines(sym):
-    return requests.get(f"{BINANCE_BASE}/api/v3/klines",params={"symbol":sym,"interval":CFG["timeframe"],"limit":120},timeout=10).json()
+    try:
+        return requests.get(f"{BINANCE_BASE}/api/v3/klines",params={"symbol":sym,"interval":CFG["timeframe"],"limit":120},timeout=15).json()
+    except:
+        return []
 
 def send_tg(msg):
     if not TELEGRAM_TOKEN: return
@@ -153,19 +165,22 @@ def fmt(sym,r):
 ⚠️ <i>تحليل فقط — ليست نصيحة مالية</i>"""
 
 def run_scan():
-    print(f"[{datetime.now().strftime('%H:%M:%S')}] 🔍 مسح السوق...")
-    try: pairs=get_top_pairs()
-    except Exception as e:
-        send_tg(f"❌ خطأ: {e}"); return
+    print(f"[{datetime.now().strftime('%H:%M:%S')}] مسح السوق...")
+    pairs=get_top_pairs()
+    if not pairs:
+        send_tg("❌ فشل جلب الأزواج"); return
     results=[]; buys=[]
     for sym in pairs:
         try:
-            r=run_ghp(get_klines(sym))
+            klines=get_klines(sym)
+            if not isinstance(klines,list): continue
+            r=run_ghp(klines)
             if r:
                 r["sym"]=sym; results.append(r)
                 if r["buy"] and r["rr"]>=CFG["min_rr"]: buys.append(r)
-            time.sleep(0.1)
-        except: pass
+            time.sleep(0.15)
+        except Exception as e:
+            print(f"خطأ {sym}: {e}")
     buys.sort(key=lambda x:(x["strength"],x["rr"]),reverse=True)
     strong=[b for b in buys if b["strength"]>=4]
     send_tg(f"""🔍 <b>مسح GHP مكتمل</b>
@@ -174,9 +189,10 @@ def run_scan():
     for r in buys[:5]:
         send_tg(fmt(r["sym"],r))
         time.sleep(0.5)
-    if not buys: print("⏳ لا توجد إشارات")
+    if not buys: print("لا توجد إشارات")
 
 if __name__=="__main__":
+    print("GHP Bot يعمل!")
     send_tg(f"""⚡ <b>GHP Bot بدأ!</b>
 📊 {CFG['top_n']} عملة | ⏱ {CFG['timeframe']} | 🔄 كل {CFG['scan_interval']} دقيقة""")
     while True:
@@ -186,4 +202,4 @@ if __name__=="__main__":
         except KeyboardInterrupt:
             send_tg("⏹ GHP Bot توقف"); break
         except Exception as e:
-            print(f"❌ {e}"); time.sleep(60)
+            print(f"خطأ: {e}"); time.sleep(60)
