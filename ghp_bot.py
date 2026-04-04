@@ -124,8 +124,8 @@ def run_ghp(klines):
 
 def get_top_pairs():
     r=requests.get(f"{BINANCE_BASE}/api/v3/ticker/24hr",timeout=10).json()
-    f=[t for t in r if t["symbol"].endswith("USDT") and not any(x in t["symbol"] for x in ["DOWN","UP","BEAR","BULL"])]
-    return [t["symbol"] for t in sorted(f,key=lambda x:float(x["quoteVolume"]),reverse=True)[:CFG["top_n"]]]
+    f=[t for t in r if isinstance(t, dict) and t.get("symbol","").endswith("USDT") and not any(x in t.get("symbol","") for x in ["DOWN","UP","BEAR","BULL"])]
+  return [t["symbol"] for t in sorted(f,key=lambda x:float(x["quoteVolume"]),reverse=True)[:CFG["top_n"]]]
 
 def get_klines(sym):
     return requests.get(f"{BINANCE_BASE}/api/v3/klines",params={"symbol":sym,"interval":CFG["timeframe"],"limit":120},timeout=10).json()
