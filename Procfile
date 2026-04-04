@@ -1,0 +1,1 @@
+worker: python ghp_bot.py
