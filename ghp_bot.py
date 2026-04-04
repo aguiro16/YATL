@@ -9,7 +9,8 @@ TELEGRAM_TOKEN   = os.environ.get("TELEGRAM_TOKEN", "")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "400815773")
 BINANCE_API_KEY  = os.environ.get("BINANCE_API_KEY", "")
 BINANCE_SECRET   = os.environ.get("BINANCE_SECRET", "")
-BINANCE_BASE     = "https://api.binance.com"
+BINANCE_BASE     = "https://api1.binance.com"
+
 
 CFG = {
     "atr_len":14,"vol_len":20,"vol_mult":1.5,
