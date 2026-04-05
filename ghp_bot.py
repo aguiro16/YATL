@@ -132,11 +132,22 @@ def get_top_pairs():
     try:
         r=requests.get(f"{BINANCE_BASE}/api/v3/ticker/24hr",timeout=15).json()
         if not isinstance(r, list): return []
-        f=[t for t in r if isinstance(t,dict) and isinstance(t.get("symbol",""),str) and t.get("symbol","").endswith("USDT") and not any(x in t.get("symbol","") for x in ["DOWN","UP","BEAR","BULL"])]
-        return [t["symbol"] for t in sorted(f,key=lambda x:float(x.get("quoteVolume",0)),reverse=True)[:CFG["top_n"]]]
+        f=[t for t in r if isinstance(t,dict)
+           and isinstance(t.get("symbol",""),str)
+           and t.get("symbol","").endswith("USDT")
+           and not any(x in t.get("symbol","") for x in ["DOWN","UP","BEAR","BULL"])
+           and float(t.get("priceChangePercent",0)) > 2
+           and float(t.get("priceChangePercent",0)) < 15
+           and float(t.get("quoteVolume",0)) > 1000000]
+        sorted_pairs = sorted(f,key=lambda x:float(x.get("priceChangePercent",0)),reverse=True)
+        result = [t["symbol"] for t in sorted_pairs[:CFG["top_n"]]]
+        gainers_info = ", ".join([f"{t['symbol']}(+{float(t['priceChangePercent']):.1f}%)" for t in sorted_pairs[:10]])
+        print(f"أفضل الرابحون: {gainers_info}")
+        return result
     except Exception as e:
         print(f"خطأ get_top_pairs: {e}")
         return []
+
 
 def get_klines(sym):
     try:
