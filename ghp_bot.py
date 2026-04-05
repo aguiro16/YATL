@@ -24,11 +24,9 @@ CFG = {
     "trade_amount":20,
     "min_gain_pct":2.0,
     "max_gain_pct":15.0,
+    "min_volume_usd":5000000,
 }
 
-# ══════════════════════════════════════════════
-#  INDICATORS
-# ══════════════════════════════════════════════
 def ema_history(data, period):
     if len(data) < period: return []
     k = 2/(period+1)
@@ -72,9 +70,6 @@ def macd(closes):
     if len(ma) < 9: return None, None
     return ma[-1], ema(ma, 9)
 
-# ══════════════════════════════════════════════
-#  GHP PRO ENGINE
-# ══════════════════════════════════════════════
 def run_ghp_pro(klines):
     if not klines or len(klines) < 60: return None
     H = [float(k[2]) for k in klines]
@@ -123,10 +118,8 @@ def run_ghp_pro(klines):
 
     st = 5 if score>=8 else 4 if score>=6 else 3 if score>=4 else 2 if score>=3 else 1
 
-    # ── Strong BUY: كل الشروط الأصلية ──
     strong_buy = cross and rh and hv and at and mb and (be or sc) and st >= CFG["min_strength"]
 
-    # ── Early BUY: بدون شرط EMA Cross ──
     early_conditions = sum([rh, hv, at, mb, (be or sc)])
     early_buy = (not cross) and early_conditions >= 4 and rsi_v and rsi_v > 45 and hv and mb
 
@@ -153,11 +146,7 @@ def run_ghp_pro(klines):
         "cross": cross, "hv": hv, "rh": rh, "at": at, "mb": mb,
     }
 
-# ══════════════════════════════════════════════
-#  GAINERS SCANNER
-# ══════════════════════════════════════════════
 def get_gainers():
-    """أفضل N عملة ارتفاعاً بين 2%-15% مع حجم كافٍ"""
     try:
         r = requests.get(f"{BINANCE_BASE}/api/v3/ticker/24hr", timeout=15).json()
         if not isinstance(r, list): return []
@@ -168,12 +157,12 @@ def get_gainers():
             and t.get("symbol","").endswith("USDT")
             and not any(x in t.get("symbol","") for x in ["DOWN","UP","BEAR","BULL"])
             and CFG["min_gain_pct"] <= float(t.get("priceChangePercent", 0)) <= CFG["max_gain_pct"]
-            and float(t.get("quoteVolume", 0)) > 500000
+            and float(t.get("quoteVolume", 0)) > CFG["min_volume_usd"]
         ]
         sorted_pairs = sorted(filtered, key=lambda x: float(x.get("priceChangePercent",0)), reverse=True)
         pairs = [t["symbol"] for t in sorted_pairs[:CFG["top_n"]]]
-        gainers_preview = [(t["symbol"], float(t["priceChangePercent"])) for t in sorted_pairs[:5]]
-        print(f"Gainers مكتشفة: {len(pairs)} | أفضل 5: {gainers_preview}")
+        preview = [(t["symbol"], float(t["priceChangePercent"])) for t in sorted_pairs[:5]]
+        print(f"Gainers: {len(pairs)} | أفضل 5: {preview}")
         return pairs
     except Exception as e:
         print(f"خطأ get_gainers: {e}")
@@ -189,9 +178,6 @@ def get_klines(sym):
     except:
         return []
 
-# ══════════════════════════════════════════════
-#  TELEGRAM
-# ══════════════════════════════════════════════
 STARS = {5:"★★★★★", 4:"★★★★☆", 3:"★★★☆☆", 2:"★★☆☆☆", 1:"★☆☆☆☆"}
 
 def send_tg(msg):
@@ -233,16 +219,12 @@ def fmt_early(sym, r):
 🕐 {datetime.now().strftime('%H:%M:%S')}
 ⚠️ <i>إشارة مبكرة — خطر أعلى — ليست نصيحة مالية</i>"""
 
-# ══════════════════════════════════════════════
-#  MAIN SCAN
-# ══════════════════════════════════════════════
 def run_scan():
     print(f"[{datetime.now().strftime('%H:%M:%S')}] 🔍 مسح Gainers...")
     pairs = get_gainers()
 
     if not pairs:
-        send_tg("⏳ لا توجد عملات رابحة الآن (2%-15%) — انتظار المسح القادم")
-        print("لا توجد Gainers في النطاق المحدد")
+        send_tg("⏳ لا توجد Gainers الآن (2%-15% | حجم >5M$) — انتظار المسح القادم")
         return
 
     results = []
@@ -267,39 +249,31 @@ def run_scan():
     strong_signals.sort(key=lambda x: (x["st"], x["rr"]), reverse=True)
     early_signals.sort(key=lambda x: x["rr"], reverse=True)
 
-    # ملخص
     send_tg(f"""🔍 <b>مسح GHP Pro مكتمل</b>
 📊 Gainers مُحللة: {len(results)}
 🚀 Strong BUY: {len(strong_signals)}
 ⚡ Early BUY: {len(early_signals)}
 🕐 {datetime.now().strftime('%H:%M:%S')}""")
 
-    # إرسال Strong BUY أولاً
     for r in strong_signals[:5]:
         send_tg(fmt_strong(r["sym"], r))
-        print(f"✅ STRONG BUY: {r['sym']} | {r['st']}★ | R:R 1:{r['rr']:.2f}")
+        print(f"✅ STRONG: {r['sym']} | {r['st']}★ | R:R 1:{r['rr']:.2f}")
         time.sleep(0.5)
 
-    # إرسال Early BUY
     for r in early_signals[:3]:
         send_tg(fmt_early(r["sym"], r))
-        print(f"⚡ EARLY BUY: {r['sym']} | R:R 1:{r['rr']:.2f}")
+        print(f"⚡ EARLY: {r['sym']} | R:R 1:{r['rr']:.2f}")
         time.sleep(0.5)
 
-    if not strong_signals and not early_signals:
-        print("⏳ لا توجد إشارات في هذا المسح")
+    print(f"✅ Strong:{len(strong_signals)} Early:{len(early_signals)} من {len(results)}")
 
-    print(f"✅ اكتمل — Strong:{len(strong_signals)} Early:{len(early_signals)} من {len(results)} زوج")
-
-# ══════════════════════════════════════════════
-#  ENTRY POINT
-# ══════════════════════════════════════════════
 if __name__ == "__main__":
     print("⚡ GHP Pro Bot يعمل!")
     send_tg(f"""⚡ <b>GHP Pro Bot بدأ!</b>
-🔥 Strong BUY: شروط GHP كاملة
-⚡ Early BUY: دخول مبكر قبل التقاطع
-📊 يمسح Gainers (2%-15%) كل {CFG['scan_interval']} دقيقة""")
+🚀 Strong BUY: شروط GHP كاملة
+⚡ Early BUY: دخول مبكر
+📊 Gainers فقط (2%-15%) | حجم تداول أكثر من 5M$
+🔄 كل {CFG['scan_interval']} دقيقة""")
 
     while True:
         try:
