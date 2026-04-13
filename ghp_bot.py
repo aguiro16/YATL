@@ -57,19 +57,38 @@ def check_trade_result(trade):
     try:
         sym=trade["sym"]; entry=trade["entry"]
         tp1=trade["tp1"]; tp2=trade["tp2"]; sl=trade["sl"]
+
+        # تحديد نوع الصفقة: SHORT إذا كان SL أعلى من الدخول
+        is_short = sl > entry
+
         klines=requests.get(f"{BINANCE_BASE}/api/v3/klines",
             params={"symbol":sym,"interval":"15m","limit":20},timeout=10).json()
         if not klines or not isinstance(klines,list): return None
         t1=t2=hit_sl=False
         for k in klines:
             h=float(k[2]); l=float(k[3])
-            if not t1 and h>=tp1: t1=True
-            if t1 and not t2 and h>=tp2: t2=True
-            if l<=sl and not t1: hit_sl=True; break
-        if t2:       result="TP2"; ep=tp2; pct=(tp2/entry-1)*100
-        elif t1:     result="TP1"; ep=tp1; pct=(tp1/entry-1)*100
-        elif hit_sl: result="SL";  ep=sl;  pct=(sl/entry-1)*100
-        else:        ep=float(klines[-1][4]); pct=(ep/entry-1)*100; result="OPEN"
+            if is_short:
+                # SHORT: TP أقل من الدخول، SL أعلى
+                if not t1 and l<=tp1: t1=True
+                if t1 and not t2 and l<=tp2: t2=True
+                if h>=sl and not t1: hit_sl=True; break
+            else:
+                # LONG: TP أعلى من الدخول، SL أقل
+                if not t1 and h>=tp1: t1=True
+                if t1 and not t2 and h>=tp2: t2=True
+                if l<=sl and not t1: hit_sl=True; break
+
+        if is_short:
+            if t2:       result="TP2"; ep=tp2; pct=(entry/tp2-1)*100
+            elif t1:     result="TP1"; ep=tp1; pct=(entry/tp1-1)*100
+            elif hit_sl: result="SL";  ep=sl;  pct=(entry/sl-1)*100
+            else:        ep=float(klines[-1][4]); pct=(entry/ep-1)*100; result="OPEN"
+        else:
+            if t2:       result="TP2"; ep=tp2; pct=(tp2/entry-1)*100
+            elif t1:     result="TP1"; ep=tp1; pct=(tp1/entry-1)*100
+            elif hit_sl: result="SL";  ep=sl;  pct=(sl/entry-1)*100
+            else:        ep=float(klines[-1][4]); pct=(ep/entry-1)*100; result="OPEN"
+
         return {"result":result,"exit_price":ep,"pct":pct}
     except Exception as e:
         print(f"خطأ check {trade['sym']}: {e}"); return None
