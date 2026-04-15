@@ -58,7 +58,6 @@ def check_trade_result(trade):
         sym=trade["sym"]; entry=trade["entry"]
         tp1=trade["tp1"]; tp2=trade["tp2"]; sl=trade["sl"]
 
-        # تحديد نوع الصفقة: SHORT إذا كان SL أعلى من الدخول
         is_short = sl > entry
 
         klines=requests.get(f"{BINANCE_BASE}/api/v3/klines",
@@ -68,12 +67,10 @@ def check_trade_result(trade):
         for k in klines:
             h=float(k[2]); l=float(k[3])
             if is_short:
-                # SHORT: TP أقل من الدخول، SL أعلى
                 if not t1 and l<=tp1: t1=True
                 if t1 and not t2 and l<=tp2: t2=True
                 if h>=sl and not t1: hit_sl=True; break
             else:
-                # LONG: TP أعلى من الدخول، SL أقل
                 if not t1 and h>=tp1: t1=True
                 if t1 and not t2 and h>=tp2: t2=True
                 if l<=sl and not t1: hit_sl=True; break
@@ -294,13 +291,23 @@ def analyze_smc(sym, klines_4h, klines_1h, klines_15m):
     atr=calc_atr(H15,L15,C15,14)
     curr_price=C15[-1]
     if not atr: return None
-    if direction=="BULLISH" and (rsi>75 or rsi<30): return None
-    if direction=="BEARISH" and (rsi<25 or rsi>70): return None
+
+    # ✅ تعديل 1: تشديد فلتر RSI
+    if direction=="BULLISH" and (rsi>68 or rsi<35): return None
+    if direction=="BEARISH" and (rsi<32 or rsi>65): return None
+
     swing_low=min(L15[-20:]); swing_high=max(H15[-20:])
     ote=calc_ote(swing_low,swing_high)
     in_ote=ote["low"]<=curr_price<=ote["high"]
     near_ote=(curr_price<ote["high"]*1.03 if direction=="BULLISH"
               else curr_price>ote["low"]*0.97)
+
+    # ✅ تعديل 2: رفض الإشارة إذا السعر تجاوز OTE بأكثر من 10%
+    if direction=="BULLISH" and curr_price > ote["high"] * 1.10:
+        return None
+    if direction=="BEARISH" and curr_price < ote["low"] * 0.90:
+        return None
+
     confluence=0; conf_details=[]
     if trend_4h!="NEUTRAL":   confluence+=2; conf_details.append(f"4H {trend_4h}")
     if bos_1h:                confluence+=2; conf_details.append("BOS 1H")
@@ -312,7 +319,10 @@ def analyze_smc(sym, klines_4h, klines_1h, klines_15m):
                               confluence+=2; conf_details.append("Liq Sweep")
     if in_ote:                confluence+=2; conf_details.append("OTE ✅")
     elif near_ote:            confluence+=1; conf_details.append("Near OTE")
-    if confluence<6: return None
+
+    # ✅ تعديل 3: رفع الحد الأدنى للتقاطع من 6 إلى 8
+    if confluence<8: return None
+
     if direction=="BULLISH":
         entry=curr_price; sl=ob["bottom"]*(1-CFG["sl_buffer"])
         if sl>=entry: sl=entry*0.98
@@ -547,23 +557,19 @@ def check_reports():
 if __name__=="__main__":
     print("📐 SMC Bot يعمل!")
     data=load_trades()
-    send_tg(f"""📐 <b>SMC Bot بدأ!</b>
+    send_tg(f"""📐 <b>SMC Bot بدأ! — نسخة محسّنة</b>
 
 🧠 <b>Smart Money Concepts — 3 فريمات:</b>
 📊 4H — اتجاه السوق الكبير
 📊 1H — BOS و CHoCH
 📊 15m — Order Block + FVG + OTE
 
-⚙️ <b>محركات الإشارة:</b>
-✅ Market Structure
-✅ Break of Structure (BOS)
-✅ Change of Character (CHoCH)
-✅ Order Blocks
-✅ Fair Value Gaps (FVG)
-✅ Liquidity Sweeps
-✅ OTE (Fibonacci 61.8%-78.6%)
+⚙️ <b>التحسينات الجديدة:</b>
+✅ RSI مشدد: LONG 35-68 | SHORT 32-65
+✅ رفض الإشارات خارج OTE بأكثر من 10%
+✅ الحد الأدنى للتقاطع: 8/14 نقطة
 
-⭐ تقاطع 6+ نقاط مطلوب | R:R min: {CFG['min_rr']}
+⭐ تقاطع 8+ نقاط مطلوب | R:R min: {CFG['min_rr']}
 
 📋 <b>التقارير:</b>
 ⏱ نتيجة كل إشارة بعد {CFG['check_after_hours']} ساعات
