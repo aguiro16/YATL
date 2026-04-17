@@ -1,11 +1,8 @@
 import os, time, requests, json, math, logging, threading
 from datetime import datetime, timezone
-from dotenv import load_dotenv
 from http.server import HTTPServer, BaseHTTPRequestHandler
 import hmac, hashlib
 from urllib.parse import urlencode
-
-load_dotenv()
 
 TELEGRAM_TOKEN   = os.environ.get("TELEGRAM_TOKEN", "")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "400815773")
