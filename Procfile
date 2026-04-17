@@ -1,1 +1,1 @@
-worker:python ghp_bot.py
+worker: python ghp_bot.py
