@@ -1,10 +1,36 @@
-import os, time, requests, json
+import os, time, requests, json, math, logging, threading
 from datetime import datetime, timezone
+from dotenv import load_dotenv
+from http.server import HTTPServer, BaseHTTPRequestHandler
+import hmac, hashlib
+from urllib.parse import urlencode
+
+load_dotenv()
 
 TELEGRAM_TOKEN   = os.environ.get("TELEGRAM_TOKEN", "")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "400815773")
-BINANCE_BASE     = "https://data-api.binance.vision"
-TRADES_FILE      = "smc_trades.json"
+BINANCE_API_KEY  = os.environ.get("BINANCE_API_KEY", "")
+BINANCE_API_SECRET = os.environ.get("BINANCE_API_SECRET", "")
+TESTNET          = False
+RISK_PER_TRADE   = float(os.environ.get("RISK_PER_TRADE", "0.5"))
+MAX_OPEN_TRADES  = int(os.environ.get("MAX_OPEN_TRADES", "5"))
+LEVERAGE         = int(os.environ.get("LEVERAGE", "1"))
+
+DATA_BASES = [
+    "https://api.binance.com",
+    "https://api1.binance.com",
+    "https://api2.binance.com",
+    "https://api3.binance.com",
+    "https://data-api.binance.vision",
+]
+
+FUTURES_BASE = "https://fapi.binance.com"
+TRADES_FILE = "smc_trades.json"
+
+logging.basicConfig(level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(message)s",
+    handlers=[logging.StreamHandler()])
+log = logging.getLogger(__name__)
 
 CFG = {
     "top_n":60, "min_volume_usd":5000000,
@@ -19,7 +45,49 @@ CFG = {
     "daily_report_hour":20,
     "btc_filter_pct":-2.0,
     "signal_cooldown_hours":6,
+    "min_trade_usdt":10.0,
+    "max_trade_usdt":20.0,
 }
+
+PORT = int(os.environ.get("PORT", 8080))
+
+class Handler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.send_header("Content-Type", "text/plain; charset=utf-8")
+        self.end_headers()
+        data = load_trades()
+        msg = (f"SMC Futures Bot Running\n"
+               f"Total:{data['stats']['total']} "
+               f"Wins:{data['stats']['wins']} "
+               f"Losses:{data['stats']['losses']}\n"
+               f"Time: {datetime.now(timezone.utc).strftime('%H:%M:%S')} UTC")
+        self.wfile.write(msg.encode("utf-8"))
+    def log_message(self, format, *args): pass
+
+def run_server():
+    try:
+        server = HTTPServer(("0.0.0.0", PORT), Handler)
+        log.info(f"HTTP Server على البورت {PORT}")
+        server.serve_forever()
+    except Exception as e:
+        log.error(f"Server error: {e}")
+
+SESSION = requests.Session()
+SESSION.headers.update({"User-Agent": "Mozilla/5.0", "Accept": "application/json"})
+
+def binance_get(path, params=None, bases=None, timeout=15):
+    if bases is None:
+        bases = DATA_BASES
+    for base in bases:
+        try:
+            r = SESSION.get(f"{base}{path}", params=params, timeout=timeout)
+            if r.status_code == 200:
+                return r.json()
+        except Exception as e:
+            log.warning(f"فشل {base}: {e}")
+        time.sleep(0.5)
+    return None
 
 def load_trades():
     try:
@@ -27,84 +95,230 @@ def load_trades():
             with open(TRADES_FILE,"r") as f:
                 return json.load(f)
     except: pass
-    return {"trades":[],"stats":{"total":0,"wins":0,"losses":0,"pending":0}}
+    return {"trades":[],"open_orders":{},"stats":{"total":0,"wins":0,"losses":0,"pending":0,"pnl_usdt":0.0}}
 
 def save_trades(data):
     try:
         with open(TRADES_FILE,"w") as f:
             json.dump(data,f,indent=2)
-    except Exception as e: print(f"خطأ حفظ: {e}")
+    except Exception as e: log.error(f"خطأ حفظ: {e}")
 
-def log_signal(sym, sig_type, entry, tp1, tp2, sl, rr, details):
-    data=load_trades()
-    trade={
-        "id":len(data["trades"])+1,
-        "sym":sym, "type":sig_type,
-        "entry":entry, "tp1":tp1, "tp2":tp2, "sl":sl,
-        "rr":rr, "details":details,
-        "time":datetime.now(timezone.utc).isoformat(),
-        "timestamp":time.time(),
-        "result":"PENDING", "exit_price":0, "pct":0,
-        "day":datetime.now(timezone.utc).strftime("%Y-%m-%d"),
+def count_open_trades():
+    return len(load_trades().get("open_orders", {}))
+
+def _sign(params):
+    query = urlencode(params)
+    return hmac.new(BINANCE_API_SECRET.encode(), query.encode(), hashlib.sha256).hexdigest()
+
+def _headers():
+    return {"X-MBX-APIKEY": BINANCE_API_KEY}
+
+def _timestamp():
+    return int(time.time() * 1000)
+
+def futures_post(endpoint, params=None):
+    url = f"{FUTURES_BASE}{endpoint}"
+    p = params or {}
+    p["timestamp"] = _timestamp()
+    p["signature"] = _sign(p)
+    try:
+        r = SESSION.post(url, params=p, headers=_headers(), timeout=10)
+        r.raise_for_status()
+        return r.json()
+    except Exception as e:
+        log.error(f"Futures POST {endpoint}: {e}")
+        return None
+
+def futures_get(endpoint, params=None, signed=False):
+    url = f"{FUTURES_BASE}{endpoint}"
+    p = params or {}
+    if signed:
+        p["timestamp"] = _timestamp()
+        p["signature"] = _sign(p)
+    try:
+        r = SESSION.get(url, params=p, headers=_headers(), timeout=10)
+        r.raise_for_status()
+        return r.json()
+    except Exception as e:
+        log.error(f"Futures GET {endpoint}: {e}")
+        return None
+
+def set_leverage(sym):
+    futures_post("/fapi/v1/leverage", {"symbol": sym, "leverage": LEVERAGE})
+
+def set_margin_isolated(sym):
+    try:
+        futures_post("/fapi/v1/marginType", {"symbol": sym, "marginType": "ISOLATED"})
+    except: pass
+
+def get_futures_balance():
+    r = futures_get("/fapi/v2/balance", signed=True)
+    if not r: return 0.0
+    for b in r:
+        if b.get("asset") == "USDT":
+            return float(b.get("availableBalance", 0))
+    return 0.0
+
+def get_futures_price(sym):
+    try:
+        r = SESSION.get(f"{FUTURES_BASE}/fapi/v1/ticker/price",
+                        params={"symbol": sym}, timeout=5).json()
+        return float(r.get("price", 0))
+    except: return 0.0
+
+def get_futures_symbol_info(sym):
+    try:
+        r = SESSION.get(f"{FUTURES_BASE}/fapi/v1/exchangeInfo", timeout=10).json()
+        for s in r.get("symbols", []):
+            if s["symbol"] == sym:
+                return {"filters": {f["filterType"]: f for f in s["filters"]},
+                        "quantityPrecision": s.get("quantityPrecision", 3)}
+    except Exception as e:
+        log.error(f"symbol_info {sym}: {e}")
+    return None
+
+def round_step(value, step):
+    if step == 0: return value
+    precision = int(round(-math.log10(step)))
+    return round(round(value / step) * step, precision)
+
+def calc_futures_qty(sym, entry, sl):
+    balance = get_futures_balance()
+    if balance <= 0: return 0
+    risk_amount = balance * (RISK_PER_TRADE / 100)
+    risk_per_unit = abs(entry - sl)
+    if risk_per_unit == 0: return 0
+    raw_qty = (risk_amount / risk_per_unit) * LEVERAGE
+    min_qty_usdt = CFG["min_trade_usdt"] / entry
+    max_qty_usdt = CFG["max_trade_usdt"] / entry
+    raw_qty = max(min_qty_usdt, min(raw_qty, max_qty_usdt))
+    info = get_futures_symbol_info(sym)
+    if not info: return 0
+    lot = info["filters"].get("LOT_SIZE", {})
+    step = float(lot.get("stepSize", 0.001))
+    min_qty = float(lot.get("minQty", 0.001))
+    qty = round_step(raw_qty, step)
+    qty = max(min_qty, qty)
+    min_not = float(info["filters"].get("MIN_NOTIONAL", {}).get("notional", 5))
+    if qty * entry < min_not:
+        qty = round_step(min_not / entry * 1.01, step)
+    if qty * entry > CFG["max_trade_usdt"] * 1.1:
+        qty = round_step(CFG["max_trade_usdt"] / entry, step)
+    return qty
+
+def open_futures_trade(sym, direction, entry, sl, tp1, tp2):
+    if not BINANCE_API_KEY or not BINANCE_API_SECRET:
+        return False, "بدون مفاتيح API"
+    if count_open_trades() >= MAX_OPEN_TRADES:
+        return False, "الحد الأقصى للصفقات"
+    balance = get_futures_balance()
+    if balance < CFG["min_trade_usdt"]:
+        return False, f"الرصيد غير كافٍ ({balance:.2f} USDT)"
+    set_leverage(sym)
+    set_margin_isolated(sym)
+    side = "BUY" if direction == "BULLISH" else "SELL"
+    close_side = "SELL" if direction == "BULLISH" else "BUY"
+    qty = calc_futures_qty(sym, entry, sl)
+    if qty <= 0: return False, "حجم صفري"
+    order = futures_post("/fapi/v1/order", {
+        "symbol": sym, "side": side,
+        "type": "MARKET", "quantity": qty,
+        "reduceOnly": "false"
+    })
+    if not order or order.get("status") not in ["FILLED", "NEW"]:
+        return False, f"فشل الدخول: {order}"
+    actual_entry = float(order.get("avgPrice", entry) or entry)
+    actual_qty   = float(order.get("executedQty", qty) or qty)
+    time.sleep(1)
+    futures_post("/fapi/v1/order", {
+        "symbol": sym, "side": close_side,
+        "type": "STOP_MARKET",
+        "stopPrice": round(sl, 6),
+        "quantity": actual_qty,
+        "reduceOnly": "true",
+        "timeInForce": "GTE_GTC"
+    })
+    futures_post("/fapi/v1/order", {
+        "symbol": sym, "side": close_side,
+        "type": "TAKE_PROFIT_MARKET",
+        "stopPrice": round(tp1, 6),
+        "quantity": actual_qty,
+        "reduceOnly": "true",
+        "timeInForce": "GTE_GTC"
+    })
+    data = load_trades()
+    trade_id = len(data["trades"]) + 1
+    trade = {
+        "id": trade_id, "sym": sym,
+        "type": f"{'BULLISH' if direction=='BULLISH' else 'BEARISH'}_SMC",
+        "direction": direction,
+        "entry": actual_entry, "tp1": tp1, "tp2": tp2, "sl": sl,
+        "qty": actual_qty, "leverage": LEVERAGE,
+        "result": "PENDING", "exit_price": 0, "pnl_usdt": 0, "pct": 0,
+        "time": datetime.now(timezone.utc).isoformat(),
+        "timestamp": time.time(),
+        "day": datetime.now(timezone.utc).strftime("%Y-%m-%d"),
+        "testnet": False,
     }
     data["trades"].append(trade)
-    data["stats"]["total"]+=1
-    data["stats"]["pending"]+=1
+    data["open_orders"][sym] = {
+        "trade_id": trade_id, "direction": direction,
+        "entry": actual_entry, "tp1": tp1, "tp2": tp2, "sl": sl,
+        "qty": actual_qty, "opened_at": time.time()
+    }
+    data["stats"]["total"] += 1
+    data["stats"]["pending"] += 1
     save_trades(data)
-    return trade["id"]
+    return trade_id, "صفقة مفتوحة"
 
-def check_trade_result(trade):
-    try:
-        sym=trade["sym"]; entry=trade["entry"]
-        tp1=trade["tp1"]; tp2=trade["tp2"]; sl=trade["sl"]
-
-        is_short = sl > entry
-
-        klines=requests.get(f"{BINANCE_BASE}/api/v3/klines",
-            params={"symbol":sym,"interval":"15m","limit":20},timeout=10).json()
-        if not klines or not isinstance(klines,list): return None
-        t1=t2=hit_sl=False
-        for k in klines:
-            h=float(k[2]); l=float(k[3])
-            if is_short:
-                if not t1 and l<=tp1: t1=True
-                if t1 and not t2 and l<=tp2: t2=True
-                if h>=sl and not t1: hit_sl=True; break
+def monitor_open_trades():
+    data = load_trades(); to_remove = []
+    for sym, info in list(data.get("open_orders", {}).items()):
+        try:
+            if (time.time() - info["opened_at"]) < 120: continue
+            positions = futures_get("/fapi/v2/positionRisk", {"symbol": sym}, signed=True)
+            if not positions: continue
+            pos_amt = float(positions[0].get("positionAmt", 0))
+            if abs(pos_amt) > 0: continue
+            entry = info["entry"]; tp1 = info["tp1"]; tp2 = info["tp2"]; sl = info["sl"]
+            curr = get_futures_price(sym)
+            direction = info["direction"]
+            if direction == "BULLISH":
+                if curr >= tp2:   result="TP2"; exit_p=tp2
+                elif curr >= tp1: result="TP1"; exit_p=tp1
+                elif curr <= sl:  result="SL";  exit_p=sl
+                else:             result="OPEN"; exit_p=curr
+                pct = (exit_p/entry-1)*100
+                pnl = (exit_p-entry)*info["qty"]
             else:
-                if not t1 and h>=tp1: t1=True
-                if t1 and not t2 and h>=tp2: t2=True
-                if l<=sl and not t1: hit_sl=True; break
-
-        if is_short:
-            if t2:       result="TP2"; ep=tp2; pct=(entry/tp2-1)*100
-            elif t1:     result="TP1"; ep=tp1; pct=(entry/tp1-1)*100
-            elif hit_sl: result="SL";  ep=sl;  pct=(entry/sl-1)*100
-            else:        ep=float(klines[-1][4]); pct=(entry/ep-1)*100; result="OPEN"
-        else:
-            if t2:       result="TP2"; ep=tp2; pct=(tp2/entry-1)*100
-            elif t1:     result="TP1"; ep=tp1; pct=(tp1/entry-1)*100
-            elif hit_sl: result="SL";  ep=sl;  pct=(sl/entry-1)*100
-            else:        ep=float(klines[-1][4]); pct=(ep/entry-1)*100; result="OPEN"
-
-        return {"result":result,"exit_price":ep,"pct":pct}
-    except Exception as e:
-        print(f"خطأ check {trade['sym']}: {e}"); return None
-
-def update_pending_trades():
-    data=load_trades(); now=time.time(); updated=[]
-    for i,trade in enumerate(data["trades"]):
-        if trade["result"]!="PENDING": continue
-        if (now-trade["timestamp"])/3600>=CFG["check_after_hours"]:
-            res=check_trade_result(trade)
-            if res and res["result"]!="OPEN":
-                data["trades"][i]["result"]=res["result"]
-                data["trades"][i]["exit_price"]=res["exit_price"]
-                data["trades"][i]["pct"]=res["pct"]
-                data["stats"]["pending"]=max(0,data["stats"]["pending"]-1)
-                if res["result"] in ["TP1","TP2"]: data["stats"]["wins"]+=1
-                elif res["result"]=="SL": data["stats"]["losses"]+=1
-                updated.append((trade,res))
-    save_trades(data); return updated
+                if curr <= tp2:   result="TP2"; exit_p=tp2
+                elif curr <= tp1: result="TP1"; exit_p=tp1
+                elif curr >= sl:  result="SL";  exit_p=sl
+                else:             result="OPEN"; exit_p=curr
+                pct = (entry/exit_p-1)*100
+                pnl = (entry-exit_p)*info["qty"]
+            if result == "OPEN": continue
+            for t in data["trades"]:
+                if t["id"] == info["trade_id"]:
+                    t["result"]=result; t["exit_price"]=exit_p
+                    t["pct"]=pct; t["pnl_usdt"]=pnl; break
+            data["stats"]["pending"] = max(0, data["stats"]["pending"]-1)
+            if result in ["TP1","TP2"]: data["stats"]["wins"]+=1
+            elif result == "SL": data["stats"]["losses"]+=1
+            data["stats"]["pnl_usdt"] = data["stats"].get("pnl_usdt",0)+pnl
+            to_remove.append(sym)
+            emoji = {"TP2":"🎯","TP1":"✅","SL":"❌"}.get(result,"📊")
+            color = "🟢" if pnl >= 0 else "🔴"
+            dir_emoji = "📈" if direction=="BULLISH" else "📉"
+            send_tg(f"""{emoji} <b>نتيجة #{info['trade_id']} — {sym}</b>
+{dir_emoji} {'LONG' if direction=='BULLISH' else 'SHORT'}
+💰 دخول: ${entry:.4f} → خروج: ${exit_p:.4f}
+{color} <b>{result} | {pct:+.2f}% | {pnl:+.2f} USDT</b>
+⏱ {datetime.now(timezone.utc).strftime('%H:%M')} UTC
+💵 حقيقي""")
+        except Exception as e: log.error(f"monitor {sym}: {e}")
+    for sym in to_remove: data["open_orders"].pop(sym, None)
+    if to_remove: save_trades(data)
 
 def calc_rsi(closes, p=14):
     if len(closes)<p+1: return 50
@@ -125,9 +339,7 @@ def sma(data,p):
 
 def find_market_structure(klines):
     if len(klines)<10: return "NEUTRAL"
-    H=[float(k[2]) for k in klines]
-    L=[float(k[3]) for k in klines]
-    n=len(klines)
+    H=[float(k[2]) for k in klines]; L=[float(k[3]) for k in klines]; n=len(klines)
     highs=[]; lows=[]
     for i in range(2,min(n-2,CFG["structure_lookback"])):
         idx=n-1-i
@@ -144,29 +356,21 @@ def find_market_structure(klines):
 
 def find_bos(klines):
     if len(klines)<15: return None
-    H=[float(k[2]) for k in klines]
-    L=[float(k[3]) for k in klines]
-    C=[float(k[4]) for k in klines]
-    V=[float(k[5]) for k in klines]
-    n=len(klines)
-    avg_v=sma(V,20) or V[-1]
-    lookback=min(15,n-3)
-    recent_high=max(H[-lookback-1:-1])
-    recent_low =min(L[-lookback-1:-1])
-    curr_close=C[-1]; curr_vol=V[-1]
-    vol_confirm=curr_vol>avg_v*CFG["vol_mult"]
+    H=[float(k[2]) for k in klines]; L=[float(k[3]) for k in klines]
+    C=[float(k[4]) for k in klines]; V=[float(k[5]) for k in klines]
+    n=len(klines); avg_v=sma(V,20) or V[-1]; lookback=min(15,n-3)
+    recent_high=max(H[-lookback-1:-1]); recent_low=min(L[-lookback-1:-1])
+    vol_confirm=V[-1]>avg_v*CFG["vol_mult"]
     if C[-1]>recent_high and C[-2]<=recent_high and vol_confirm:
-        return {"type":"BULLISH","level":recent_high,"vol_ratio":curr_vol/avg_v}
+        return {"type":"BULLISH","level":recent_high,"vol_ratio":V[-1]/avg_v}
     if C[-1]<recent_low and C[-2]>=recent_low and vol_confirm:
-        return {"type":"BEARISH","level":recent_low,"vol_ratio":curr_vol/avg_v}
+        return {"type":"BEARISH","level":recent_low,"vol_ratio":V[-1]/avg_v}
     return None
 
 def find_choch(klines):
     if len(klines)<20: return None
-    H=[float(k[2]) for k in klines]
-    L=[float(k[3]) for k in klines]
-    C=[float(k[4]) for k in klines]
-    n=len(klines)
+    H=[float(k[2]) for k in klines]; L=[float(k[3]) for k in klines]
+    C=[float(k[4]) for k in klines]; n=len(klines)
     lows=[]
     for i in range(2,min(20,n-2)):
         idx=n-1-i
@@ -185,12 +389,9 @@ def find_choch(klines):
 
 def find_order_block(klines, direction="BULLISH"):
     if len(klines)<5: return None
-    O=[float(k[1]) for k in klines]
-    H=[float(k[2]) for k in klines]
-    L=[float(k[3]) for k in klines]
-    C=[float(k[4]) for k in klines]
-    n=len(klines)
-    lookback=min(CFG["ob_lookback"],n-3)
+    O=[float(k[1]) for k in klines]; H=[float(k[2]) for k in klines]
+    L=[float(k[3]) for k in klines]; C=[float(k[4]) for k in klines]
+    n=len(klines); lookback=min(CFG["ob_lookback"],n-3)
     if direction=="BULLISH":
         for i in range(2,lookback+1):
             idx=n-1-i
@@ -209,10 +410,8 @@ def find_order_block(klines, direction="BULLISH"):
 
 def find_fvg(klines, direction="BULLISH"):
     if len(klines)<5: return None
-    H=[float(k[2]) for k in klines]
-    L=[float(k[3]) for k in klines]
-    C=[float(k[4]) for k in klines]
-    n=len(klines); curr_price=C[-1]
+    H=[float(k[2]) for k in klines]; L=[float(k[3]) for k in klines]
+    C=[float(k[4]) for k in klines]; n=len(klines); curr_price=C[-1]
     lookback=min(15,n-3); fvgs=[]
     for i in range(2,lookback+1):
         idx=n-1-i
@@ -238,14 +437,10 @@ def find_fvg(klines, direction="BULLISH"):
 
 def find_liquidity_sweep(klines):
     if len(klines)<10: return None
-    H=[float(k[2]) for k in klines]
-    L=[float(k[3]) for k in klines]
-    C=[float(k[4]) for k in klines]
-    O=[float(k[1]) for k in klines]
-    n=len(klines)
-    lookback=min(20,n-3)
-    prev_high=max(H[-lookback-1:-2])
-    prev_low =min(L[-lookback-1:-2])
+    H=[float(k[2]) for k in klines]; L=[float(k[3]) for k in klines]
+    C=[float(k[4]) for k in klines]; O=[float(k[1]) for k in klines]
+    n=len(klines); lookback=min(20,n-3)
+    prev_high=max(H[-lookback-1:-2]); prev_low=min(L[-lookback-1:-2])
     cl=C[-1]; op=O[-1]
     ph=float(klines[-2][2]); pl=float(klines[-2][3])
     pc=float(klines[-2][4]); po=float(klines[-2][1])
@@ -268,61 +463,37 @@ def analyze_smc(sym, klines_4h, klines_1h, klines_15m):
     if len(klines_4h)<30 or len(klines_1h)<30 or len(klines_15m)<20: return None
     trend_4h=find_market_structure(klines_4h)
     if trend_4h=="NEUTRAL": return None
-    bos_1h=find_bos(klines_1h)
-    choch_1h=find_choch(klines_1h)
+    bos_1h=find_bos(klines_1h); choch_1h=find_choch(klines_1h)
     confirmed=False; signal_source=""
-    if bos_1h and bos_1h["type"]==trend_4h:
-        confirmed=True; signal_source="BOS"
+    if bos_1h and bos_1h["type"]==trend_4h: confirmed=True; signal_source="BOS"
     elif choch_1h:
-        if choch_1h["type"]=="BULLISH_CHOCH" and trend_4h=="BULLISH":
-            confirmed=True; signal_source="CHoCH"
-        elif choch_1h["type"]=="BEARISH_CHOCH" and trend_4h=="BEARISH":
-            confirmed=True; signal_source="CHoCH"
+        if choch_1h["type"]=="BULLISH_CHOCH" and trend_4h=="BULLISH": confirmed=True; signal_source="CHoCH"
+        elif choch_1h["type"]=="BEARISH_CHOCH" and trend_4h=="BEARISH": confirmed=True; signal_source="CHoCH"
     if not confirmed: return None
     direction="BULLISH" if trend_4h=="BULLISH" else "BEARISH"
     ob=find_order_block(klines_15m,direction)
     fvg=find_fvg(klines_15m,direction)
     liq=find_liquidity_sweep(klines_15m)
     if not ob: return None
-    C15=[float(k[4]) for k in klines_15m]
-    H15=[float(k[2]) for k in klines_15m]
-    L15=[float(k[3]) for k in klines_15m]
-    rsi=calc_rsi(C15,14)
-    atr=calc_atr(H15,L15,C15,14)
-    curr_price=C15[-1]
+    C15=[float(k[4]) for k in klines_15m]; H15=[float(k[2]) for k in klines_15m]; L15=[float(k[3]) for k in klines_15m]
+    rsi=calc_rsi(C15,14); atr=calc_atr(H15,L15,C15,14); curr_price=C15[-1]
     if not atr: return None
-
-    # ✅ تعديل 1: تشديد فلتر RSI
-    if direction=="BULLISH" and (rsi>68 or rsi<35): return None
-    if direction=="BEARISH" and (rsi<32 or rsi>65): return None
-
+    if direction=="BULLISH" and (rsi>75 or rsi<30): return None
+    if direction=="BEARISH" and (rsi<25 or rsi>70): return None
     swing_low=min(L15[-20:]); swing_high=max(H15[-20:])
     ote=calc_ote(swing_low,swing_high)
     in_ote=ote["low"]<=curr_price<=ote["high"]
-    near_ote=(curr_price<ote["high"]*1.03 if direction=="BULLISH"
-              else curr_price>ote["low"]*0.97)
-
-    # ✅ تعديل 2: رفض الإشارة إذا السعر تجاوز OTE بأكثر من 10%
-    if direction=="BULLISH" and curr_price > ote["high"] * 1.10:
-        return None
-    if direction=="BEARISH" and curr_price < ote["low"] * 0.90:
-        return None
-
+    near_ote=(curr_price<ote["high"]*1.03 if direction=="BULLISH" else curr_price>ote["low"]*0.97)
     confluence=0; conf_details=[]
     if trend_4h!="NEUTRAL":   confluence+=2; conf_details.append(f"4H {trend_4h}")
     if bos_1h:                confluence+=2; conf_details.append("BOS 1H")
     if choch_1h:              confluence+=2; conf_details.append("CHoCH 1H")
     if ob:                    confluence+=2; conf_details.append("Order Block")
-    if fvg and (fvg.get("in_fvg") or fvg.get("near_fvg")):
-                              confluence+=2; conf_details.append("FVG")
-    if liq and liq["type"]==direction:
-                              confluence+=2; conf_details.append("Liq Sweep")
-    if in_ote:                confluence+=2; conf_details.append("OTE ✅")
-    elif near_ote:            confluence+=1; conf_details.append("Near OTE")
-
-    # ✅ تعديل 3: رفع الحد الأدنى للتقاطع من 6 إلى 8
-    if confluence<8: return None
-
+    if fvg and (fvg.get("in_fvg") or fvg.get("near_fvg")): confluence+=2; conf_details.append("FVG")
+    if liq and liq["type"]==direction: confluence+=2; conf_details.append("Liq Sweep")
+    if in_ote:   confluence+=2; conf_details.append("OTE ✅")
+    elif near_ote: confluence+=1; conf_details.append("Near OTE")
+    if confluence<6: return None
     if direction=="BULLISH":
         entry=curr_price; sl=ob["bottom"]*(1-CFG["sl_buffer"])
         if sl>=entry: sl=entry*0.98
@@ -354,20 +525,17 @@ def analyze_smc(sym, klines_4h, klines_1h, klines_15m):
 
 def get_market_state():
     try:
-        k=requests.get(f"{BINANCE_BASE}/api/v3/klines",
-            params={"symbol":"BTCUSDT","interval":"4h","limit":50},timeout=10).json()
+        k = binance_get("/api/v3/klines",
+            {"symbol":"BTCUSDT","interval":"4h","limit":50})
         if not k or len(k)<30: return "NEUTRAL",0,0
         C=[float(x[4]) for x in k]
-        chg_4h=(C[-1]-C[-2])/C[-2]*100
-        chg_24h=(C[-1]-C[-6])/C[-6]*100
-        trend=find_market_structure(k)
-        return trend,chg_4h,chg_24h
+        return find_market_structure(k),(C[-1]-C[-2])/C[-2]*100,(C[-1]-C[-6])/C[-6]*100
     except: return "NEUTRAL",0,0
 
 def check_btc():
     try:
-        k=requests.get(f"{BINANCE_BASE}/api/v3/klines",
-            params={"symbol":"BTCUSDT","interval":"1h","limit":5},timeout=10).json()
+        k = binance_get("/api/v3/klines",
+            {"symbol":"BTCUSDT","interval":"1h","limit":5})
         if not k or len(k)<2: return True,0
         C=[float(x[4]) for x in k]
         chg=(C[-1]-C[-4])/C[-4]*100
@@ -376,7 +544,7 @@ def check_btc():
 
 def get_pairs():
     try:
-        r=requests.get(f"{BINANCE_BASE}/api/v3/ticker/24hr",timeout=15).json()
+        r = binance_get("/api/v3/ticker/24hr")
         if not isinstance(r,list): return []
         f=[t for t in r
            if isinstance(t,dict)
@@ -389,35 +557,90 @@ def get_pairs():
         return [t["symbol"] for t in s[:CFG["top_n"]]]
     except: return []
 
-def get_klines(sym,tf,limit=60):
+def get_klines(sym, tf, limit=60):
+    return binance_get("/api/v3/klines",
+        {"symbol":sym,"interval":tf,"limit":limit}) or []
+
+def send_tg(msg):
+    if not TELEGRAM_TOKEN: return
     try:
-        return requests.get(f"{BINANCE_BASE}/api/v3/klines",
-            params={"symbol":sym,"interval":tf,"limit":limit},timeout=15).json()
-    except: return []
+        SESSION.post(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
+            json={"chat_id":TELEGRAM_CHAT_ID,"text":msg,"parse_mode":"HTML"},timeout=10)
+    except Exception as e: log.error(f"TG: {e}")
+
+last_signals={}
+
+def send_signal(sym, r):
+    direction = r["signal"]
+    dir_emoji = "📈" if direction=="BULLISH" else "📉"
+    dir_text  = "LONG" if direction=="BULLISH" else "SHORT"
+    rr_emoji  = "✅" if r["rr"]>=3.0 else "🔸"
+    ote_emoji = "✅" if r.get("in_ote") else "🔸"
+    conf_str  = " | ".join(r["conf_details"])
+    fvg_line=""
+    if r.get("fvg") and (r["fvg"].get("in_fvg") or r["fvg"].get("near_fvg")):
+        fvg_line=f"\n🔷 FVG: ${r['fvg']['bot']:.4f} — ${r['fvg']['top']:.4f}"
+    liq_line=""
+    if r.get("liq"):
+        liq_line=f"\n💧 Liq Sweep: ${r['liq']['swept_level']:.4f}"
+    exec_status = "⏸ مراقبة فقط"
+    trade_id = None
+    if BINANCE_API_KEY and BINANCE_API_SECRET:
+        tid, msg = open_futures_trade(sym, direction, r["entry"], r["sl"], r["tp1"], r["tp2"])
+        if tid:
+            trade_id = tid
+            exec_status = f"✅ صفقة #{tid} مفتوحة"
+        else:
+            exec_status = f"⚠️ {msg}"
+    else:
+        data = load_trades()
+        trade_id = len(data["trades"]) + 1
+        trade = {
+            "id": trade_id, "sym": sym,
+            "type": f"{'BULLISH' if direction=='BULLISH' else 'BEARISH'}_SMC",
+            "entry": r["entry"], "tp1": r["tp1"], "tp2": r["tp2"], "sl": r["sl"],
+            "rr": r["rr"],
+            "time": datetime.now(timezone.utc).isoformat(),
+            "timestamp": time.time(),
+            "result": "PENDING", "exit_price": 0, "pct": 0,
+            "day": datetime.now(timezone.utc).strftime("%Y-%m-%d"),
+        }
+        data["trades"].append(trade)
+        data["stats"]["total"] += 1
+        data["stats"]["pending"] += 1
+        save_trades(data)
+    msg = f"""{dir_emoji} <b>SMC {dir_text} #{trade_id} — {sym}</b> 💵 حقيقي
+📐 {r['source']} | {r['trend_4h']} على 4H
+⭐ تقاطع: {r['confluence']}/14 نقطة
+📌 {conf_str}
+━━━━━━━━━━━━━━━
+💰 دخول:  ${r['entry']:.4f}
+🎯 TP1:   ${r['tp1']:.4f}  (+{r['t1p']:.2f}%)
+🎯 TP2:   ${r['tp2']:.4f}  (+{r['t2p']:.2f}%)
+🛑 SL:    ${r['sl']:.4f}  (-{r['slp']:.2f}%)
+📊 R:R:   1:{r['rr']:.2f} {rr_emoji} | 🔧 {LEVERAGE}x
+━━━━━━━━━━━━━━━
+📦 Order Block: ${r['ob']['bottom']:.4f} — ${r['ob']['top']:.4f}
+🎯 OTE Zone: ${r['ote']['low']:.4f} — ${r['ote']['high']:.4f} {ote_emoji}{fvg_line}{liq_line}
+━━━━━━━━━━━━━━━
+📟 {exec_status}
+🔢 RSI: {r['rsi']:.1f} | ATR: ${r['atr']:.4f}
+🕐 {datetime.now(timezone.utc).strftime('%H:%M:%S')} UTC
+⚠️ <i>تحليل فقط — ليست نصيحة مالية</i>"""
+    send_tg(msg)
+    log.info(f"{dir_emoji} #{trade_id} {sym} | {dir_text} | RR:{r['rr']:.2f} | Conf:{r['confluence']}")
 
 def gen_daily_report():
     data=load_trades()
     today=datetime.now(timezone.utc).strftime("%Y-%m-%d")
-    day_trades=[t for t in data["trades"]
-                if t.get("day")==today and t["result"]!="PENDING"]
+    day_trades=[t for t in data["trades"] if t.get("day")==today and t["result"]!="PENDING"]
     if not day_trades:
         return f"📐 <b>تقرير SMC اليومي — {today}</b>\n⏳ لا توجد صفقات محسومة اليوم"
     wins=[t for t in day_trades if t["result"] in ["TP1","TP2"]]
     losses=[t for t in day_trades if t["result"]=="SL"]
     total_pct=sum(t["pct"] for t in day_trades)
     wr=len(wins)/len(day_trades)*100
-    types={}
-    for t in day_trades:
-        tp=t["type"]
-        if tp not in types: types[tp]={"w":0,"l":0,"total":0}
-        types[tp]["total"]+=1
-        if t["result"] in ["TP1","TP2"]: types[tp]["w"]+=1
-        else: types[tp]["l"]+=1
-    type_lines=""
-    for tp,v in types.items():
-        emoji="📈" if "BULLISH" in tp else "📉"
-        wr_t=v["w"]/v["total"]*100
-        type_lines+=f"\n{emoji} {tp}: {v['w']}/{v['total']} ({wr_t:.0f}%)"
+    pnl=sum(t.get("pnl_usdt",0) for t in day_trades)
     pnl_color="🟢" if total_pct>0 else "🔴"
     tp2_c=len([t for t in wins if t["result"]=="TP2"])
     tp1_c=len([t for t in wins if t["result"]=="TP1"])
@@ -425,18 +648,13 @@ def gen_daily_report():
 ━━━━━━━━━━━━━━━
 📈 الإشارات: {len(day_trades)} | ✅ {len(wins)} | ❌ {len(losses)}
 🎯 نسبة النجاح: {wr:.1f}%
-{pnl_color} إجمالي: {total_pct:+.2f}%
+{pnl_color} إجمالي: {total_pct:+.2f}% | {pnl:+.2f} USDT
 ━━━━━━━━━━━━━━━
-🎯 TP2: {tp2_c} | 👍 TP1: {tp1_c} | ❌ SL: {len(losses)}{type_lines}
+🎯 TP2: {tp2_c} | 👍 TP1: {tp1_c} | ❌ SL: {len(losses)}
 ━━━━━━━━━━━━━━━"""
     if wins:
         best=max(wins,key=lambda x:x["pct"])
-        avg_w=sum(t["pct"] for t in wins)/len(wins)
         msg+=f"\n🏆 أفضل: #{best['id']} {best['sym']} {best['pct']:+.2f}%"
-        msg+=f"\n📈 متوسط الربح: +{avg_w:.2f}%"
-    if losses:
-        avg_l=sum(t["pct"] for t in losses)/len(losses)
-        msg+=f"\n📉 متوسط الخسارة: {avg_l:.2f}%"
     return msg
 
 def gen_check_report(trade, res):
@@ -450,54 +668,55 @@ def gen_check_report(trade, res):
 {color} <b>{res['result']} | {res['pct']:+.2f}%</b>
 ⏱ بعد {CFG['check_after_hours']} ساعات"""
 
-def send_tg(msg):
-    if not TELEGRAM_TOKEN: return
-    try:
-        requests.post(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
-            json={"chat_id":TELEGRAM_CHAT_ID,"text":msg,"parse_mode":"HTML"},timeout=10)
-    except Exception as e: print(f"TG: {e}")
+def update_pending_trades():
+    data=load_trades(); now=time.time(); updated=[]
+    for i,trade in enumerate(data["trades"]):
+        if trade["result"]!="PENDING": continue
+        if (now-trade["timestamp"])/3600>=CFG["check_after_hours"]:
+            sym=trade["sym"]
+            try:
+                klines=binance_get("/api/v3/klines",
+                    {"symbol":sym,"interval":"15m","limit":20})
+                if not klines or not isinstance(klines,list): continue
+                entry=trade["entry"]; tp1=trade["tp1"]; tp2=trade["tp2"]; sl=trade["sl"]
+                t1=t2=hit_sl=False
+                for k in klines:
+                    h=float(k[2]); l=float(k[3])
+                    if not t1 and h>=tp1: t1=True
+                    if t1 and not t2 and h>=tp2: t2=True
+                    if l<=sl and not t1: hit_sl=True; break
+                if t2:       result="TP2"; ep=tp2; pct=(tp2/entry-1)*100
+                elif t1:     result="TP1"; ep=tp1; pct=(tp1/entry-1)*100
+                elif hit_sl: result="SL";  ep=sl;  pct=(sl/entry-1)*100
+                else: continue
+                data["trades"][i]["result"]=result
+                data["trades"][i]["exit_price"]=ep
+                data["trades"][i]["pct"]=pct
+                data["stats"]["pending"]=max(0,data["stats"]["pending"]-1)
+                if result in ["TP1","TP2"]: data["stats"]["wins"]+=1
+                elif result=="SL": data["stats"]["losses"]+=1
+                updated.append((trade,{"result":result,"exit_price":ep,"pct":pct}))
+            except Exception as e: log.error(f"check {sym}: {e}")
+    save_trades(data); return updated
 
-def send_signal(sym, r):
-    sig_type=f"{'BULLISH' if r['signal']=='BULLISH' else 'BEARISH'}_SMC"
-    trade_id=log_signal(sym,sig_type,r["entry"],r["tp1"],r["tp2"],r["sl"],
-                        r["rr"],{"confluence":r["confluence"],"details":r["conf_details"]})
-    dir_emoji="📈" if r["signal"]=="BULLISH" else "📉"
-    dir_text="LONG" if r["signal"]=="BULLISH" else "SHORT"
-    rr_emoji="✅" if r["rr"]>=3.0 else "🔸"
-    ote_emoji="✅" if r.get("in_ote") else "🔸"
-    conf_str=" | ".join(r["conf_details"])
-    fvg_line=""
-    if r.get("fvg") and (r["fvg"].get("in_fvg") or r["fvg"].get("near_fvg")):
-        fvg_line=f"\n🔷 FVG: ${r['fvg']['bot']:.4f} — ${r['fvg']['top']:.4f}"
-    liq_line=""
-    if r.get("liq"):
-        liq_line=f"\n💧 Liq Sweep: ${r['liq']['swept_level']:.4f}"
-    msg=f"""{dir_emoji} <b>SMC {dir_text} #{trade_id} — {sym}</b>
-📐 {r['source']} | {r['trend_4h']} على 4H
-⭐ تقاطع: {r['confluence']}/14 نقطة
-📌 {conf_str}
-━━━━━━━━━━━━━━━
-💰 دخول:  ${r['entry']:.4f}
-🎯 TP1:   ${r['tp1']:.4f}  (+{r['t1p']:.2f}%)
-🎯 TP2:   ${r['tp2']:.4f}  (+{r['t2p']:.2f}%)
-🛑 SL:    ${r['sl']:.4f}  (-{r['slp']:.2f}%)
-📊 R:R:   1:{r['rr']:.2f} {rr_emoji}
-━━━━━━━━━━━━━━━
-📦 Order Block: ${r['ob']['bottom']:.4f} — ${r['ob']['top']:.4f}
-🎯 OTE Zone: ${r['ote']['low']:.4f} — ${r['ote']['high']:.4f} {ote_emoji}{fvg_line}{liq_line}
-━━━━━━━━━━━━━━━
-🔢 RSI: {r['rsi']:.1f} | ATR: ${r['atr']:.4f}
-🕐 {datetime.now(timezone.utc).strftime('%H:%M:%S')} UTC
-⚠️ <i>تحليل فقط — ليست نصيحة مالية</i>"""
-    send_tg(msg)
-    print(f"{dir_emoji} #{trade_id} {sym} | {dir_text} | RR:{r['rr']:.2f} | Conf:{r['confluence']}")
+last_daily=-1
 
-last_signals={}
+def check_reports():
+    global last_daily
+    now=datetime.now(timezone.utc)
+    if now.hour==CFG["daily_report_hour"] and 0<=now.minute<15:
+        if last_daily!=now.day:
+            send_tg(gen_daily_report())
+            last_daily=now.day
+    monitor_open_trades()
+    updated=update_pending_trades()
+    for trade,res in updated:
+        send_tg(gen_check_report(trade,res))
 
 def run_scan(fast=False):
     now=datetime.now(timezone.utc).strftime('%H:%M:%S')
     label="⚡ مسح سريع 15د" if fast else "🔍 مسح رئيسي 1س"
-    print(f"[{now}] {label}...")
+    log.info(f"[{now}] {label}...")
     if not fast:
         market_state,btc_4h,btc_24h=get_market_state()
     else:
@@ -524,10 +743,13 @@ def run_scan(fast=False):
                 if r["signal"]=="BULLISH": bull_sigs.append(r)
                 else: bear_sigs.append(r)
             time.sleep(0.2)
-        except Exception as e: print(f"خطأ {sym}: {e}")
+        except Exception as e: log.error(f"خطأ {sym}: {e}")
     signals.sort(key=lambda x:(x["confluence"],x["rr"]),reverse=True)
-    send_tg(f"""{label} — SMC Bot
+    bal=get_futures_balance()
+    send_tg(f"""{label} — SMC Futures Bot
 {btc_s}
+💼 {bal:.2f} USDT | صفقات: {count_open_trades()}/{MAX_OPEN_TRADES}
+💰 حجم/صفقة: ${CFG['min_trade_usdt']:.0f}-${CFG['max_trade_usdt']:.0f}
 📊 أزواج: {len(pairs)} | 📈 {len(bull_sigs)} | 📉 {len(bear_sigs)}
 🕐 {now} UTC""")
     sent=0
@@ -537,44 +759,20 @@ def run_scan(fast=False):
         send_signal(r["sym"],r)
         last_signals[r["sym"]]=time.time()
         sent+=1; time.sleep(0.5)
-    print(f"✅ {sent} إشارة | Bull:{len(bull_sigs)} Bear:{len(bear_sigs)}")
-
-last_daily=-1
-
-def check_reports():
-    global last_daily
-    now=datetime.now(timezone.utc)
-    if now.hour==CFG["daily_report_hour"] and 0<=now.minute<15:
-        if last_daily!=now.day:
-            send_tg(gen_daily_report())
-            last_daily=now.day
-            print("📊 التقرير اليومي أُرسل")
-    updated=update_pending_trades()
-    for trade,res in updated:
-        send_tg(gen_check_report(trade,res))
-        print(f"📊 #{trade['id']} {trade['sym']}: {res['result']} {res['pct']:+.2f}%")
+    log.info(f"✅ {sent} إشارة | Bull:{len(bull_sigs)} Bear:{len(bear_sigs)}")
 
 if __name__=="__main__":
-    print("📐 SMC Bot يعمل!")
+    server_thread = threading.Thread(target=run_server, daemon=True)
+    server_thread.start()
+    time.sleep(2)
+    log.info("📐 SMC Futures Bot يبدأ...")
     data=load_trades()
-    send_tg(f"""📐 <b>SMC Bot بدأ! — نسخة محسّنة</b>
-
-🧠 <b>Smart Money Concepts — 3 فريمات:</b>
-📊 4H — اتجاه السوق الكبير
-📊 1H — BOS و CHoCH
-📊 15m — Order Block + FVG + OTE
-
-⚙️ <b>التحسينات الجديدة:</b>
-✅ RSI مشدد: LONG 35-68 | SHORT 32-65
-✅ رفض الإشارات خارج OTE بأكثر من 10%
-✅ الحد الأدنى للتقاطع: 8/14 نقطة
-
-⭐ تقاطع 8+ نقاط مطلوب | R:R min: {CFG['min_rr']}
-
-📋 <b>التقارير:</b>
-⏱ نتيجة كل إشارة بعد {CFG['check_after_hours']} ساعات
-📅 يومي 20:00 UTC (23:00 بتوقيت السعودية)
-
+    send_tg(f"""📐 <b>SMC Futures Bot بدأ! 💵 LIVE</b>
+🧠 Smart Money Concepts — 3 فريمات
+⭐ تقاطع 6+ نقاط | R:R min: {CFG['min_rr']}
+🔧 رافعة: {LEVERAGE}x | خطر/صفقة: {RISK_PER_TRADE}%
+💰 حجم/صفقة: ${CFG['min_trade_usdt']:.0f} — ${CFG['max_trade_usdt']:.0f}
+📊 أقصى صفقات: {MAX_OPEN_TRADES}
 📦 صفقات: {data['stats']['total']} | ✅ {data['stats']['wins']} | ❌ {data['stats']['losses']}""")
     while True:
         try:
@@ -586,4 +784,4 @@ if __name__=="__main__":
         except KeyboardInterrupt:
             send_tg("⏹ SMC Bot توقف"); break
         except Exception as e:
-            print(f"❌ {e}"); time.sleep(60)
+            log.error(f"❌ {e}"); time.sleep(60)
