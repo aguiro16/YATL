@@ -1,13 +1,11 @@
 """
-SMC Signals Bot — إشارات فقط بدون تداول حقيقي
-Multi-timeframe: 4H → 1H → 15M
+SMC Signals Bot
 """
 
 import os
 import time
 import json
 import requests
-import numpy as np
 from datetime import datetime, timezone
 
 TELEGRAM_TOKEN   = os.environ.get("TELEGRAM_TOKEN", "")
@@ -59,13 +57,7 @@ def load_data():
                 return json.load(f)
     except Exception as e:
         print(f"Load error: {e}")
-    return {
-        "signals": [],
-        "stats": {
-            "total": 0, "wins": 0, "losses": 0,
-            "pending": 0, "win_pct": 0.0
-        }
-    }
+    return {"signals": [], "stats": {"total": 0, "wins": 0, "losses": 0, "pending": 0, "win_pct": 0.0}}
 
 def save_data(data):
     try:
@@ -80,44 +72,30 @@ def log_signal(sym, direction, entry, tp1, tp2, sl, rr,
     data = load_data()
     sig_id = data["stats"]["total"] + 1
     signal = {
-        "id":           sig_id,
-        "sym":          sym,
-        "direction":    direction,
-        "entry":        entry,
-        "tp1":          tp1,
-        "tp2":          tp2,
-        "sl":           sl,
-        "rr":           rr,
-        "confluence":   confluence,
-        "conf_details": conf_details,
-        "rsi":          rsi,
-        "atr":          atr,
-        "source":       signal_source,
-        "ob_top":       ob["top"],
-        "ob_bottom":    ob["bottom"],
-        "ote_low":      ote["low"],
-        "ote_high":     ote["high"],
-        "in_ote":       in_ote,
-        "time":         datetime.now(timezone.utc).isoformat(),
-        "timestamp":    time.time(),
-        "day":          datetime.now(timezone.utc).strftime("%Y-%m-%d"),
-        "result":       "PENDING",
-        "exit_price":   0.0,
-        "pnl_pct":      0.0,
+        "id": sig_id, "sym": sym, "direction": direction,
+        "entry": entry, "tp1": tp1, "tp2": tp2, "sl": sl, "rr": rr,
+        "confluence": confluence, "conf_details": conf_details,
+        "rsi": rsi, "atr": atr, "source": signal_source,
+        "ob_top": ob["top"], "ob_bottom": ob["bottom"],
+        "ote_low": ote["low"], "ote_high": ote["high"], "in_ote": in_ote,
+        "time": datetime.now(timezone.utc).isoformat(),
+        "timestamp": time.time(),
+        "day": datetime.now(timezone.utc).strftime("%Y-%m-%d"),
+        "result": "PENDING", "exit_price": 0.0, "pnl_pct": 0.0,
     }
     data["signals"].append(signal)
-    data["stats"]["total"]   += 1
+    data["stats"]["total"] += 1
     data["stats"]["pending"] += 1
     save_data(data)
     return sig_id
 
 def check_signal_result(signal):
     try:
-        sym    = signal["sym"]
-        entry  = signal["entry"]
-        tp1    = signal["tp1"]
-        tp2    = signal["tp2"]
-        sl     = signal["sl"]
+        sym = signal["sym"]
+        entry = signal["entry"]
+        tp1 = signal["tp1"]
+        tp2 = signal["tp2"]
+        sl = signal["sl"]
         direct = signal["direction"]
         klines = requests.get(
             f"{BINANCE_BASE}/api/v3/klines",
@@ -165,9 +143,9 @@ def update_pending_signals():
             continue
         res = check_signal_result(sig)
         if res and res["result"] != "OPEN":
-            data["signals"][i]["result"]     = res["result"]
+            data["signals"][i]["result"] = res["result"]
             data["signals"][i]["exit_price"] = res["exit_price"]
-            data["signals"][i]["pnl_pct"]    = res["pnl_pct"]
+            data["signals"][i]["pnl_pct"] = res["pnl_pct"]
             data["stats"]["pending"] = max(0, data["stats"]["pending"] - 1)
             if res["result"] in ["TP1", "TP2"]:
                 data["stats"]["wins"] += 1
@@ -249,7 +227,7 @@ def find_market_structure(klines):
     highs.sort(key=lambda x: x[0])
     lows.sort(key=lambda x: x[0])
     h1, h2 = highs[-2][1], highs[-1][1]
-    l1, l2 = lows[-2][1],  lows[-1][1]
+    l1, l2 = lows[-2][1], lows[-1][1]
     if h2 > h1 and l2 > l1: return "BULLISH"
     if h2 < h1 and l2 < l1: return "BEARISH"
     return "NEUTRAL"
@@ -331,21 +309,17 @@ def find_fvg(klines, direction, curr_price):
             if gap_top > gap_bot:
                 gs = (gap_top - gap_bot) / gap_bot * 100
                 if gs >= CFG["fvg_min_pct"]:
-                    fvgs.append({
-                        "top": gap_top, "bottom": gap_bot,
-                        "mid": (gap_top + gap_bot) / 2,
-                        "in_fvg": gap_bot <= curr_price <= gap_top * 1.02,
-                    })
+                    fvgs.append({"top": gap_top, "bottom": gap_bot,
+                                 "mid": (gap_top + gap_bot) / 2,
+                                 "in_fvg": gap_bot <= curr_price <= gap_top * 1.02})
         else:
             gap_top = L[idx-1]; gap_bot = H[idx+1]
             if gap_top > gap_bot:
                 gs = (gap_top - gap_bot) / gap_bot * 100
                 if gs >= CFG["fvg_min_pct"]:
-                    fvgs.append({
-                        "top": gap_top, "bottom": gap_bot,
-                        "mid": (gap_top + gap_bot) / 2,
-                        "in_fvg": gap_bot <= curr_price <= gap_top * 1.02,
-                    })
+                    fvgs.append({"top": gap_top, "bottom": gap_bot,
+                                 "mid": (gap_top + gap_bot) / 2,
+                                 "in_fvg": gap_bot <= curr_price <= gap_top * 1.02})
     if fvgs:
         return min(fvgs, key=lambda x: abs(x["mid"] - curr_price))
     return None
@@ -443,8 +417,8 @@ def analyze_symbol(sym):
         liq = find_liquidity_sweep(k15m)
         swing_low  = min(L15[-20:])
         swing_high = max(H15[-20:])
-        ote      = calc_ote(swing_low, swing_high)
-        in_ote   = ote["low"] <= curr_price <= ote["high"]
+        ote    = calc_ote(swing_low, swing_high)
+        in_ote = ote["low"] <= curr_price <= ote["high"]
         near_ote = (curr_price < ote["high"] * 1.03 if direction == "LONG"
                     else curr_price > ote["low"] * 0.97)
         confluence   = 0
@@ -469,13 +443,13 @@ def analyze_symbol(sym):
             confluence += 1; conf_details.append("Near OTE")
         if confluence < CFG["min_confluence"]: return None
         if direction == "LONG":
-            sl  = ob["bottom"] * (1 - CFG["sl_buffer"])
+            sl   = ob["bottom"] * (1 - CFG["sl_buffer"])
             if sl >= curr_price: sl = curr_price * 0.98
             risk = curr_price - sl
             tp1  = curr_price + risk * 2.0
             tp2  = curr_price + risk * 4.0
         else:
-            sl  = ob["top"] * (1 + CFG["sl_buffer"])
+            sl   = ob["top"] * (1 + CFG["sl_buffer"])
             if sl <= curr_price: sl = curr_price * 1.02
             risk = sl - curr_price
             tp1  = curr_price - risk * 2.0
@@ -498,52 +472,52 @@ def analyze_symbol(sym):
         return None
 
 def format_signal(r, sig_id):
-    dir_emoji  = "📈" if r["direction"] == "LONG" else "📉"
-    rr_emoji   = "✅" if r["rr"] >= 3.0 else "🔸"
-    ote_emoji  = "✅" if r["in_ote"] else "🔸"
-    conf_str   = " | ".join(r["conf_details"])
+    dir_emoji = "\U0001f4c8" if r["direction"] == "LONG" else "\U0001f4c9"
+    rr_emoji  = "\u2705" if r["rr"] >= 3.0 else "\U0001f538"
+    ote_emoji = "\u2705" if r["in_ote"] else "\U0001f538"
+    conf_str  = " | ".join(r["conf_details"])
     t1p = abs(r["tp1"] / r["entry"] - 1) * 100
     t2p = abs(r["tp2"] / r["entry"] - 1) * 100
     slp = abs(r["sl"]  / r["entry"] - 1) * 100
     fvg_line = ""
     if r.get("fvg") and r["fvg"].get("in_fvg"):
-        fvg_line = f"\n🔷 FVG: ${r['fvg']['bottom']:.4f} — ${r['fvg']['top']:.4f}"
+        fvg_line = f"\n\U0001f537 FVG: ${r['fvg']['bottom']:.4f} - ${r['fvg']['top']:.4f}"
     liq_line = ""
     if r.get("liq"):
-        liq_line = f"\n💧 Liq Sweep: ${r['liq']['swept_level']:.4f}"
+        liq_line = f"\n\U0001f4a7 Liq Sweep: ${r['liq']['swept_level']:.4f}"
     return (
-        f"{dir_emoji} <b>SMC #{sig_id} — {r['sym']}</b>\n"
-        f"📐 {r['source']} | {r['bias']} على 4H\n"
-        f"⭐ تقاطع: {r['confluence']}/14 نقطة\n"
-        f"📌 {conf_str}\n"
-        f"━━━━━━━━━━━━━━━\n"
-        f"💵 دخول:  ${r['entry']:.4f}\n"
-        f"🎯 TP1:   ${r['tp1']:.4f}  (+{t1p:.2f}%)\n"
-        f"🎯 TP2:   ${r['tp2']:.4f}  (+{t2p:.2f}%)\n"
-        f"🛑 SL:    ${r['sl']:.4f}  (-{slp:.2f}%)\n"
-        f"📊 R:R:   1:{r['rr']:.2f} {rr_emoji} | 🔧 1x\n"
-        f"━━━━━━━━━━━━━━━\n"
-        f"📦 OB: ${r['ob']['bottom']:.4f} — ${r['ob']['top']:.4f}\n"
-        f"🎯 OTE: ${r['ote']['low']:.4f} — ${r['ote']['high']:.4f} {ote_emoji}"
+        f"{dir_emoji} <b>SMC #{sig_id} - {r['sym']}</b>\n"
+        f"\U0001f4d0 {r['source']} | {r['bias']} 4H\n"
+        f"\u2b50 Confluence: {r['confluence']}/14\n"
+        f"\U0001f4cc {conf_str}\n"
+        f"---------------\n"
+        f"\U0001f4b5 Entry:  ${r['entry']:.4f}\n"
+        f"\U0001f3af TP1:    ${r['tp1']:.4f}  (+{t1p:.2f}%)\n"
+        f"\U0001f3af TP2:    ${r['tp2']:.4f}  (+{t2p:.2f}%)\n"
+        f"\U0001f6d1 SL:     ${r['sl']:.4f}  (-{slp:.2f}%)\n"
+        f"\U0001f4ca R:R:    1:{r['rr']:.2f} {rr_emoji}\n"
+        f"---------------\n"
+        f"\U0001f4e6 OB: ${r['ob']['bottom']:.4f} - ${r['ob']['top']:.4f}\n"
+        f"\U0001f3af OTE: ${r['ote']['low']:.4f} - ${r['ote']['high']:.4f} {ote_emoji}"
         f"{fvg_line}{liq_line}\n"
-        f"━━━━━━━━━━━━━━━\n"
-        f"🔢 RSI: {r['rsi']:.1f} | ATR: ${r['atr']:.4f}\n"
-        f"🕐 {datetime.now(timezone.utc).strftime('%H:%M:%S')} UTC\n"
-        f"⚠️ <i>تحليل فقط — ليست نصيحة مالية</i>"
+        f"---------------\n"
+        f"\U0001f522 RSI: {r['rsi']:.1f} | ATR: ${r['atr']:.4f}\n"
+        f"\U0001f550 {datetime.now(timezone.utc).strftime('%H:%M:%S')} UTC\n"
+        f"<i>\u26a0\ufe0f Analysis only - not financial advice</i>"
     )
 
 def format_result(signal, res):
-    result_emoji = {"TP2": "🎯", "TP1": "✅", "SL": "❌"}.get(res["result"], "⏳")
-    color        = "🟢" if res["pnl_pct"] > 0 else "🔴"
-    dir_emoji    = "📈" if signal["direction"] == "LONG" else "📉"
+    result_emoji = {"TP2": "\U0001f3af", "TP1": "\u2705", "SL": "\u274c"}.get(res["result"], "\u23f3")
+    color = "\U0001f7e2" if res["pnl_pct"] > 0 else "\U0001f534"
+    dir_emoji = "\U0001f4c8" if signal["direction"] == "LONG" else "\U0001f4c9"
     return (
-        f"{result_emoji} <b>نتيجة #{signal['id']} — {signal['sym']}</b>\n"
+        f"{result_emoji} <b>Result #{signal['id']} - {signal['sym']}</b>\n"
         f"{dir_emoji} {signal['direction']} | {signal['source']}\n"
-        f"💵 دخول: ${signal['entry']:.4f}\n"
-        f"🚪 خروج: ${res['exit_price']:.4f}\n"
+        f"\U0001f4b5 Entry: ${signal['entry']:.4f}\n"
+        f"\U0001f6aa Exit:  ${res['exit_price']:.4f}\n"
         f"{color} <b>{res['result']} | {res['pnl_pct']:+.2f}%</b>\n"
-        f"⭐ تقاطع: {signal['confluence']}/14\n"
-        f"⏱ بعد {CFG['check_after_hours']} ساعات"
+        f"\u2b50 Confluence: {signal['confluence']}/14\n"
+        f"\u23f1 After {CFG['check_after_hours']} hours"
     )
 
 def gen_daily_report():
@@ -556,48 +530,47 @@ def gen_daily_report():
     win_pct = stats["wins"] / total_decided * 100 if total_decided > 0 else 0
     if not day_sigs:
         return (
-            f"📊 <b>تقرير SMC اليومي — {today}</b>\n"
-            f"━━━━━━━━━━━━━━━\n"
-            f"⏳ لا توجد إشارات محسومة اليوم\n"
-            f"━━━━━━━━━━━━━━━\n"
-            f"📈 الإجمالي الكلي:\n"
-            f"📊 {stats['total']} إشارة | ✅ {stats['wins']} | ❌ {stats['losses']}\n"
-            f"🎯 نسبة النجاح: {win_pct:.1f}%"
+            f"\U0001f4ca <b>SMC Daily Report - {today}</b>\n"
+            f"---------------\n"
+            f"\u23f3 No signals decided today\n"
+            f"---------------\n"
+            f"\U0001f4c8 All time:\n"
+            f"\U0001f4ca {stats['total']} signals | \u2705 {stats['wins']} | \u274c {stats['losses']}\n"
+            f"\U0001f3af Win rate: {win_pct:.1f}%"
         )
     wins   = [s for s in day_sigs if s["result"] in ["TP1", "TP2"]]
     losses = [s for s in day_sigs if s["result"] == "SL"]
     tp2_c  = len([s for s in wins if s["result"] == "TP2"])
     tp1_c  = len([s for s in wins if s["result"] == "TP1"])
-    day_wr = len(wins) / len(day_sigs) * 100
+    day_wr    = len(wins) / len(day_sigs) * 100
     total_pnl = sum(s["pnl_pct"] for s in day_sigs)
-    pnl_emoji = "🟢" if total_pnl > 0 else "🔴"
-    avg_conf = sum(s["confluence"] for s in day_sigs) / len(day_sigs)
+    pnl_emoji = "\U0001f7e2" if total_pnl > 0 else "\U0001f534"
+    avg_conf  = sum(s["confluence"] for s in day_sigs) / len(day_sigs)
     report = (
-        f"📊 <b>تقرير SMC اليومي — {today}</b>\n"
-        f"━━━━━━━━━━━━━━━\n"
-        f"📈 إشارات اليوم: {len(day_sigs)}\n"
-        f"✅ ناجحة: {len(wins)} | ❌ فاشلة: {len(losses)}\n"
-        f"🎯 نسبة اليوم: {day_wr:.1f}%\n"
-        f"{pnl_emoji} إجمالي: {total_pnl:+.2f}%\n"
-        f"━━━━━━━━━━━━━━━\n"
-        f"🎯 TP2: {tp2_c} | 👍 TP1: {tp1_c} | ❌ SL: {len(losses)}\n"
-        f"⭐ متوسط تقاطع: {avg_conf:.1f}/14\n"
-        f"━━━━━━━━━━━━━━━\n"
+        f"\U0001f4ca <b>SMC Daily Report - {today}</b>\n"
+        f"---------------\n"
+        f"\U0001f4c8 Signals today: {len(day_sigs)}\n"
+        f"\u2705 Wins: {len(wins)} | \u274c Losses: {len(losses)}\n"
+        f"\U0001f3af Win rate: {day_wr:.1f}%\n"
+        f"{pnl_emoji} Total: {total_pnl:+.2f}%\n"
+        f"---------------\n"
+        f"\U0001f3af TP2: {tp2_c} | TP1: {tp1_c} | \u274c SL: {len(losses)}\n"
+        f"\u2b50 Avg confluence: {avg_conf:.1f}/14\n"
+        f"---------------\n"
     )
     if wins:
         best  = max(wins, key=lambda x: x["pnl_pct"])
         avg_w = sum(s["pnl_pct"] for s in wins) / len(wins)
-        report += f"🏆 أفضل: #{best['id']} {best['sym']} {best['pnl_pct']:+.2f}%\n"
-        report += f"📈 متوسط ربح: +{avg_w:.2f}%\n"
+        report += f"\U0001f3c6 Best: #{best['id']} {best['sym']} {best['pnl_pct']:+.2f}%\n"
+        report += f"\U0001f4c8 Avg win: +{avg_w:.2f}%\n"
     if losses:
         avg_l = sum(s["pnl_pct"] for s in losses) / len(losses)
-        report += f"📉 متوسط خسارة: {avg_l:.2f}%\n"
+        report += f"\U0001f4c9 Avg loss: {avg_l:.2f}%\n"
     report += (
-        f"━━━━━━━━━━━━━━━\n"
-        f"📈 الإجمالي الكلي:\n"
-        f"📊 {stats['total']} إشارة | ✅ {stats['wins']} | ❌ {stats['losses']}\n"
-        f"🎯 نسبة النجاح: {win_pct:.1f}%\n"
-        f"⏳ معلقة: {stats['pending']}"
+        f"---------------\n"
+        f"\U0001f4c8 All time:\n"
+        f"\U0001f4ca {stats['total']} signals | \u2705 {stats['wins']} | \u274c {stats['losses']}\n"
+        f"\U0001f3af Win rate: {win_pct:.1f}% | \u23f3 Pending: {stats['pending']}"
     )
     return report
 
@@ -608,7 +581,7 @@ def run_scan():
     now_str = datetime.now(timezone.utc).strftime("%H:%M:%S")
     print(f"[{now_str}] Scanning...")
     btc_ok, btc_chg = check_btc()
-    btc_emoji = "🟢" if btc_chg > 0 else "🔴"
+    btc_emoji = "\U0001f7e2" if btc_chg > 0 else "\U0001f534"
     pairs   = get_pairs()
     signals = []
     for sym in pairs:
@@ -630,11 +603,11 @@ def run_scan():
     total_decided = stats["wins"] + stats["losses"]
     win_pct = stats["wins"] / total_decided * 100 if total_decided > 0 else 0
     send_tg(
-        f"⚡ <b>SMC Bot — مسح</b>\n"
+        f"\u26a1 <b>SMC Bot Scan</b>\n"
         f"{btc_emoji} BTC: {btc_chg:+.2f}%\n"
-        f"📊 أزواج: {len(pairs)} | 📈 {bull_c} | 📉 {bear_c}\n"
-        f"🎯 إجمالي: {stats['total']} | ✅ {stats['wins']} | نسبة: {win_pct:.1f}%\n"
-        f"🕐 {now_str} UTC"
+        f"\U0001f4ca Pairs: {len(pairs)} | \U0001f4c8 {bull_c} | \U0001f4c9 {bear_c}\n"
+        f"\U0001f3af Total: {stats['total']} | \u2705 {stats['wins']} | Rate: {win_pct:.1f}%\n"
+        f"\U0001f550 {now_str} UTC"
     )
     sent = 0
     for r in signals[:5]:
@@ -669,12 +642,12 @@ if __name__ == "__main__":
     data  = load_data()
     stats = data["stats"]
     send_tg(
-        f"📐 <b>SMC Signals Bot بدأ!</b>\n\n"
-        f"⭐ تقاطع {CFG['min_confluence']}/14+ مطلوب\n"
-        f"📐 R:R minimum: {CFG['min_rr']}\n"
-        f"⏱ نتيجة كل إشارة بعد {CFG['check_after_hours']} ساعات\n"
-        f"📅 تقرير يومي {CFG['daily_report_hour']}:00 UTC\n\n"
-        f"📦 الإجمالي: {stats['total']} | ✅ {stats['wins']} | ❌ {stats['losses']}"
+        f"\U0001f4d0 <b>SMC Signals Bot Started</b>\n\n"
+        f"\u2b50 Min confluence: {CFG['min_confluence']}/14\n"
+        f"\U0001f4d0 Min R:R: {CFG['min_rr']}\n"
+        f"\u23f1 Result after: {CFG['check_after_hours']} hours\n"
+        f"\U0001f4c5 Daily report: {CFG['daily_report_hour']}:00 UTC\n\n"
+        f"\U0001f4e6 Total: {stats['total']} | \u2705 {stats['wins']} | \u274c {stats['losses']}"
     )
     while True:
         try:
@@ -682,7 +655,7 @@ if __name__ == "__main__":
             check_results_and_report()
             time.sleep(CFG["scan_interval"] * 60)
         except KeyboardInterrupt:
-            send_tg("⏹ SMC Bot توقف")
+            send_tg("\u23f9 SMC Bot stopped")
             print("Bot stopped.")
             break
         except Exception as e:
