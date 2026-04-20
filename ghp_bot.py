@@ -473,6 +473,7 @@ def analyze_symbol(sym):
 
 def format_signal(r, sig_id):
     dir_emoji = "\U0001f4c8" if r["direction"] == "LONG" else "\U0001f4c9"
+    dir_ar    = "\u0634\u0631\u0627\u0621" if r["direction"] == "LONG" else "\u0628\u064a\u0639"
     rr_emoji  = "\u2705" if r["rr"] >= 3.0 else "\U0001f538"
     ote_emoji = "\u2705" if r["in_ote"] else "\U0001f538"
     conf_str  = " | ".join(r["conf_details"])
@@ -481,43 +482,45 @@ def format_signal(r, sig_id):
     slp = abs(r["sl"]  / r["entry"] - 1) * 100
     fvg_line = ""
     if r.get("fvg") and r["fvg"].get("in_fvg"):
-        fvg_line = f"\n\U0001f537 FVG: ${r['fvg']['bottom']:.4f} - ${r['fvg']['top']:.4f}"
+        fvg_line = f"\n\U0001f537 \u0641\u062c\u0648\u0629 \u0627\u0644\u0633\u0639\u0631: ${r['fvg']['bottom']:.4f} - ${r['fvg']['top']:.4f}"
     liq_line = ""
     if r.get("liq"):
-        liq_line = f"\n\U0001f4a7 Liq Sweep: ${r['liq']['swept_level']:.4f}"
+        liq_line = f"\n\U0001f4a7 \u0627\u062c\u062a\u064a\u0627\u062d \u0633\u064a\u0648\u0644\u0629: ${r['liq']['swept_level']:.4f}"
     return (
-        f"{dir_emoji} <b>SMC #{sig_id} - {r['sym']}</b>\n"
-        f"\U0001f4d0 {r['source']} | {r['bias']} 4H\n"
-        f"\u2b50 Confluence: {r['confluence']}/14\n"
+        f"{dir_emoji} <b>\u0625\u0634\u0627\u0631\u0629 SMC #{sig_id} - {r['sym']} ({dir_ar})</b>\n"
+        f"\U0001f4d0 {r['source']} | \u0627\u062a\u062c\u0627\u0647 {r['bias']} \u0639\u0644\u0649 4H\n"
+        f"\u2b50 \u0627\u0644\u062a\u0642\u0627\u0637\u0639: {r['confluence']}/14 \u0646\u0642\u0637\u0629\n"
         f"\U0001f4cc {conf_str}\n"
         f"---------------\n"
-        f"\U0001f4b5 Entry:  ${r['entry']:.4f}\n"
-        f"\U0001f3af TP1:    ${r['tp1']:.4f}  (+{t1p:.2f}%)\n"
-        f"\U0001f3af TP2:    ${r['tp2']:.4f}  (+{t2p:.2f}%)\n"
-        f"\U0001f6d1 SL:     ${r['sl']:.4f}  (-{slp:.2f}%)\n"
-        f"\U0001f4ca R:R:    1:{r['rr']:.2f} {rr_emoji}\n"
+        f"\U0001f4b5 \u0633\u0639\u0631 \u0627\u0644\u062f\u062e\u0648\u0644:  ${r['entry']:.4f}\n"
+        f"\U0001f3af \u0647\u062f\u0641 1:   ${r['tp1']:.4f}  (+{t1p:.2f}%)\n"
+        f"\U0001f3af \u0647\u062f\u0641 2:   ${r['tp2']:.4f}  (+{t2p:.2f}%)\n"
+        f"\U0001f6d1 \u0648\u0642\u0641 \u062e\u0633\u0627\u0631\u0629:  ${r['sl']:.4f}  (-{slp:.2f}%)\n"
+        f"\U0001f4ca \u0646\u0633\u0628\u0629 \u0627\u0644\u0631\u0628\u062d: 1:{r['rr']:.2f} {rr_emoji}\n"
         f"---------------\n"
-        f"\U0001f4e6 OB: ${r['ob']['bottom']:.4f} - ${r['ob']['top']:.4f}\n"
+        f"\U0001f4e6 \u0628\u0644\u0648\u0643 \u0627\u0644\u0637\u0644\u0628: ${r['ob']['bottom']:.4f} - ${r['ob']['top']:.4f}\n"
         f"\U0001f3af OTE: ${r['ote']['low']:.4f} - ${r['ote']['high']:.4f} {ote_emoji}"
         f"{fvg_line}{liq_line}\n"
         f"---------------\n"
         f"\U0001f522 RSI: {r['rsi']:.1f} | ATR: ${r['atr']:.4f}\n"
         f"\U0001f550 {datetime.now(timezone.utc).strftime('%H:%M:%S')} UTC\n"
-        f"<i>\u26a0\ufe0f Analysis only - not financial advice</i>"
+        f"<i>\u26a0\ufe0f \u062a\u062d\u0644\u064a\u0644 \u0641\u0642\u0637 - \u0644\u064a\u0633\u062a \u0646\u0635\u064a\u062d\u0629 \u0645\u0627\u0644\u064a\u0629</i>"
     )
 
 def format_result(signal, res):
     result_emoji = {"TP2": "\U0001f3af", "TP1": "\u2705", "SL": "\u274c"}.get(res["result"], "\u23f3")
-    color = "\U0001f7e2" if res["pnl_pct"] > 0 else "\U0001f534"
+    result_ar    = {"TP2": "\u0647\u062f\u0641 2", "TP1": "\u0647\u062f\u0641 1", "SL": "\u0648\u0642\u0641 \u062e\u0633\u0627\u0631\u0629"}.get(res["result"], "\u0645\u0641\u062a\u0648\u062d")
+    color    = "\U0001f7e2" if res["pnl_pct"] > 0 else "\U0001f534"
     dir_emoji = "\U0001f4c8" if signal["direction"] == "LONG" else "\U0001f4c9"
+    dir_ar    = "\u0634\u0631\u0627\u0621" if signal["direction"] == "LONG" else "\u0628\u064a\u0639"
     return (
-        f"{result_emoji} <b>Result #{signal['id']} - {signal['sym']}</b>\n"
-        f"{dir_emoji} {signal['direction']} | {signal['source']}\n"
-        f"\U0001f4b5 Entry: ${signal['entry']:.4f}\n"
-        f"\U0001f6aa Exit:  ${res['exit_price']:.4f}\n"
-        f"{color} <b>{res['result']} | {res['pnl_pct']:+.2f}%</b>\n"
-        f"\u2b50 Confluence: {signal['confluence']}/14\n"
-        f"\u23f1 After {CFG['check_after_hours']} hours"
+        f"{result_emoji} <b>\u0646\u062a\u064a\u062c\u0629 #{signal['id']} - {signal['sym']}</b>\n"
+        f"{dir_emoji} {dir_ar} | {signal['source']}\n"
+        f"\U0001f4b5 \u062f\u062e\u0648\u0644: ${signal['entry']:.4f}\n"
+        f"\U0001f6aa \u062e\u0631\u0648\u062c: ${res['exit_price']:.4f}\n"
+        f"{color} <b>{result_ar} | {res['pnl_pct']:+.2f}%</b>\n"
+        f"\u2b50 \u0627\u0644\u062a\u0642\u0627\u0637\u0639: {signal['confluence']}/14\n"
+        f"\u23f1 \u0628\u0639\u062f {CFG['check_after_hours']} \u0633\u0627\u0639\u0627\u062a"
     )
 
 def gen_daily_report():
@@ -530,13 +533,13 @@ def gen_daily_report():
     win_pct = stats["wins"] / total_decided * 100 if total_decided > 0 else 0
     if not day_sigs:
         return (
-            f"\U0001f4ca <b>SMC Daily Report - {today}</b>\n"
+            f"\U0001f4ca <b>\u0627\u0644\u062a\u0642\u0631\u064a\u0631 \u0627\u0644\u064a\u0648\u0645\u064a - {today}</b>\n"
             f"---------------\n"
-            f"\u23f3 No signals decided today\n"
+            f"\u23f3 \u0644\u0627 \u062a\u0648\u062c\u062f \u0625\u0634\u0627\u0631\u0627\u062a \u0645\u062d\u0633\u0648\u0645\u0629 \u0627\u0644\u064a\u0648\u0645\n"
             f"---------------\n"
-            f"\U0001f4c8 All time:\n"
-            f"\U0001f4ca {stats['total']} signals | \u2705 {stats['wins']} | \u274c {stats['losses']}\n"
-            f"\U0001f3af Win rate: {win_pct:.1f}%"
+            f"\U0001f4c8 \u0627\u0644\u0625\u062c\u0645\u0627\u0644\u064a:\n"
+            f"\U0001f4ca {stats['total']} \u0625\u0634\u0627\u0631\u0629 | \u2705 {stats['wins']} | \u274c {stats['losses']}\n"
+            f"\U0001f3af \u0646\u0633\u0628\u0629 \u0627\u0644\u0646\u062c\u0627\u062d: {win_pct:.1f}%"
         )
     wins   = [s for s in day_sigs if s["result"] in ["TP1", "TP2"]]
     losses = [s for s in day_sigs if s["result"] == "SL"]
@@ -547,30 +550,30 @@ def gen_daily_report():
     pnl_emoji = "\U0001f7e2" if total_pnl > 0 else "\U0001f534"
     avg_conf  = sum(s["confluence"] for s in day_sigs) / len(day_sigs)
     report = (
-        f"\U0001f4ca <b>SMC Daily Report - {today}</b>\n"
+        f"\U0001f4ca <b>\u0627\u0644\u062a\u0642\u0631\u064a\u0631 \u0627\u0644\u064a\u0648\u0645\u064a - {today}</b>\n"
         f"---------------\n"
-        f"\U0001f4c8 Signals today: {len(day_sigs)}\n"
-        f"\u2705 Wins: {len(wins)} | \u274c Losses: {len(losses)}\n"
-        f"\U0001f3af Win rate: {day_wr:.1f}%\n"
-        f"{pnl_emoji} Total: {total_pnl:+.2f}%\n"
+        f"\U0001f4c8 \u0625\u0634\u0627\u0631\u0627\u062a \u0627\u0644\u064a\u0648\u0645: {len(day_sigs)}\n"
+        f"\u2705 \u0646\u0627\u062c\u062d\u0629: {len(wins)} | \u274c \u0641\u0627\u0634\u0644\u0629: {len(losses)}\n"
+        f"\U0001f3af \u0646\u0633\u0628\u0629 \u0627\u0644\u064a\u0648\u0645: {day_wr:.1f}%\n"
+        f"{pnl_emoji} \u0627\u0644\u0625\u062c\u0645\u0627\u0644\u064a: {total_pnl:+.2f}%\n"
         f"---------------\n"
-        f"\U0001f3af TP2: {tp2_c} | TP1: {tp1_c} | \u274c SL: {len(losses)}\n"
-        f"\u2b50 Avg confluence: {avg_conf:.1f}/14\n"
+        f"\U0001f3af \u0647\u062f\u0641 2: {tp2_c} | \u0647\u062f\u0641 1: {tp1_c} | \u274c \u0648\u0642\u0641 \u062e\u0633\u0627\u0631\u0629: {len(losses)}\n"
+        f"\u2b50 \u0645\u062a\u0648\u0633\u0637 \u0627\u0644\u062a\u0642\u0627\u0637\u0639: {avg_conf:.1f}/14\n"
         f"---------------\n"
     )
     if wins:
         best  = max(wins, key=lambda x: x["pnl_pct"])
         avg_w = sum(s["pnl_pct"] for s in wins) / len(wins)
-        report += f"\U0001f3c6 Best: #{best['id']} {best['sym']} {best['pnl_pct']:+.2f}%\n"
-        report += f"\U0001f4c8 Avg win: +{avg_w:.2f}%\n"
+        report += f"\U0001f3c6 \u0627\u0644\u0623\u0641\u0636\u0644: #{best['id']} {best['sym']} {best['pnl_pct']:+.2f}%\n"
+        report += f"\U0001f4c8 \u0645\u062a\u0648\u0633\u0637 \u0627\u0644\u0631\u0628\u062d: +{avg_w:.2f}%\n"
     if losses:
         avg_l = sum(s["pnl_pct"] for s in losses) / len(losses)
-        report += f"\U0001f4c9 Avg loss: {avg_l:.2f}%\n"
+        report += f"\U0001f4c9 \u0645\u062a\u0648\u0633\u0637 \u0627\u0644\u062e\u0633\u0627\u0631\u0629: {avg_l:.2f}%\n"
     report += (
         f"---------------\n"
-        f"\U0001f4c8 All time:\n"
-        f"\U0001f4ca {stats['total']} signals | \u2705 {stats['wins']} | \u274c {stats['losses']}\n"
-        f"\U0001f3af Win rate: {win_pct:.1f}% | \u23f3 Pending: {stats['pending']}"
+        f"\U0001f4c8 \u0627\u0644\u0625\u062c\u0645\u0627\u0644\u064a \u0627\u0644\u0643\u0644\u064a:\n"
+        f"\U0001f4ca {stats['total']} \u0625\u0634\u0627\u0631\u0629 | \u2705 {stats['wins']} | \u274c {stats['losses']}\n"
+        f"\U0001f3af \u0646\u0633\u0628\u0629 \u0627\u0644\u0646\u062c\u0627\u062d: {win_pct:.1f}% | \u23f3 \u0645\u0639\u0644\u0642\u0629: {stats['pending']}"
     )
     return report
 
@@ -603,10 +606,10 @@ def run_scan():
     total_decided = stats["wins"] + stats["losses"]
     win_pct = stats["wins"] / total_decided * 100 if total_decided > 0 else 0
     send_tg(
-        f"\u26a1 <b>SMC Bot Scan</b>\n"
+        f"\u26a1 <b>\u0645\u0633\u062d SMC Bot</b>\n"
         f"{btc_emoji} BTC: {btc_chg:+.2f}%\n"
-        f"\U0001f4ca Pairs: {len(pairs)} | \U0001f4c8 {bull_c} | \U0001f4c9 {bear_c}\n"
-        f"\U0001f3af Total: {stats['total']} | \u2705 {stats['wins']} | Rate: {win_pct:.1f}%\n"
+        f"\U0001f4ca \u0627\u0644\u0623\u0632\u0648\u0627\u062c: {len(pairs)} | \U0001f4c8 {bull_c} | \U0001f4c9 {bear_c}\n"
+        f"\U0001f3af \u0627\u0644\u0625\u062c\u0645\u0627\u0644\u064a: {stats['total']} | \u2705 {stats['wins']} | \u0646\u0633\u0628\u0629: {win_pct:.1f}%\n"
         f"\U0001f550 {now_str} UTC"
     )
     sent = 0
@@ -642,12 +645,12 @@ if __name__ == "__main__":
     data  = load_data()
     stats = data["stats"]
     send_tg(
-        f"\U0001f4d0 <b>SMC Signals Bot Started</b>\n\n"
-        f"\u2b50 Min confluence: {CFG['min_confluence']}/14\n"
-        f"\U0001f4d0 Min R:R: {CFG['min_rr']}\n"
-        f"\u23f1 Result after: {CFG['check_after_hours']} hours\n"
-        f"\U0001f4c5 Daily report: {CFG['daily_report_hour']}:00 UTC\n\n"
-        f"\U0001f4e6 Total: {stats['total']} | \u2705 {stats['wins']} | \u274c {stats['losses']}"
+        f"\U0001f4d0 <b>SMC Signals Bot \u0628\u062f\u0623!</b>\n\n"
+        f"\u2b50 \u0623\u062f\u0646\u0649 \u062a\u0642\u0627\u0637\u0639: {CFG['min_confluence']}/14\n"
+        f"\U0001f4d0 \u0623\u062f\u0646\u0649 R:R: {CFG['min_rr']}\n"
+        f"\u23f1 \u0646\u062a\u064a\u062c\u0629 \u0643\u0644 \u0625\u0634\u0627\u0631\u0629 \u0628\u0639\u062f: {CFG['check_after_hours']} \u0633\u0627\u0639\u0627\u062a\n"
+        f"\U0001f4c5 \u062a\u0642\u0631\u064a\u0631 \u064a\u0648\u0645\u064a: {CFG['daily_report_hour']}:00 UTC\n\n"
+        f"\U0001f4e6 \u0627\u0644\u0625\u062c\u0645\u0627\u0644\u064a: {stats['total']} | \u2705 {stats['wins']} | \u274c {stats['losses']}"
     )
     while True:
         try:
@@ -655,7 +658,7 @@ if __name__ == "__main__":
             check_results_and_report()
             time.sleep(CFG["scan_interval"] * 60)
         except KeyboardInterrupt:
-            send_tg("\u23f9 SMC Bot stopped")
+            send_tg("\u23f9 SMC Bot \u062a\u0648\u0642\u0641")
             print("Bot stopped.")
             break
         except Exception as e:
