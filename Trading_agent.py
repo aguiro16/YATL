@@ -453,15 +453,15 @@ def main():
         "━━━━━━━━━━━━━━━━\n"
         "📊 مسح كل 15 دقيقة\n"
         "📱 إشارات SMC للتيليقرام\n"
-        "📈 تقرير يومي 00:00 UTC\n"
+        "📈 تقرير يومي 11 مساءً بتوقيت السعودية\n"
         "🧠 تطوير ذاتي عند النتائج السلبية"
     )
 
     threading.Thread(target=run_bot,     daemon=True).start()
     threading.Thread(target=run_tracker, daemon=True).start()
 
-    schedule.every().day.at("00:00").do(generate_daily_report)
-    print("[Main] Running — Ctrl+C to stop")
+    schedule.every().day.at("20:00").do(generate_daily_report)
+    print("[Main] Running — daily report at 20:00 UTC (11 PM KSA)")
     while True:
         schedule.run_pending()
         time.sleep(30)
