@@ -1,666 +1,558 @@
-"""
-SMC Signals Bot
-"""
-
-import os
-import time
-import json
-import requests
+import os, time, requests, json
 from datetime import datetime, timezone
 
 TELEGRAM_TOKEN   = os.environ.get("TELEGRAM_TOKEN", "")
-TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "")
+TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "400815773")
 BINANCE_BASE     = "https://data-api.binance.vision"
-TRADES_FILE      = "smc_signals.json"
+TRADES_FILE      = "trades_log.json"
 
 CFG = {
-    "min_confluence": 8,
-    "min_volume_usd": 5_000_000,
-    "min_gain_pct":   1.0,
-    "max_gain_pct":   40.0,
-    "btc_filter_pct": -2.0,
-    "min_rr":         2.0,
-    "ote_low":        0.618,
-    "ote_high":       0.786,
-    "sl_buffer":      0.005,
-    "vol_mult":       1.5,
-    "fvg_min_pct":    0.3,
-    "ob_lookback":    10,
-    "scan_interval":       60,
-    "check_after_hours":   4,
-    "signal_cooldown_hrs": 6,
-    "daily_report_hour":   20,
-    "top_n": 60,
-    "tf_4h":  "4h",
-    "tf_1h":  "1h",
-    "tf_15m": "15m",
-    "candle_limit": 60,
+    "atr_len":14, "vol_len":20, "vol_mult":1.5,
+    "rsi_len":14, "rsi_ob":75, "ema_fast":9,
+    "ema_slow":21, "ema_trend":50,
+    "tp1_mult":1.5, "tp2_mult":3.0, "tp3_mult":5.0, "sl_mult":1.2,
+    "min_rr":2.0, "top_n":60,
+    "main_interval":60, "fast_interval":15,
+    "tf_main":"1h", "tf_fast":"15m",
+    "min_gain_pct":2.0, "max_gain_pct":50.0,
+    "min_volume_usd":3000000, "btc_filter_pct":-2.0,
+    "roc_bars":3, "roc_min_pct":3.0, "momentum_roc_min":8.0, "momentum_rsi_min":55,
+    "reentry_min_gain":15.0,
+    "trend_lookback":20, "breakout_vol_mult":1.3, "sl_mult_bear":1.8,
+    "check_after_hours":4,
+    "daily_report_hour":20,
+    "daily_report_minute":0,
+    "weekly_report_day":4,
+    "weekly_report_hour":20,
 }
 
-SYMBOLS_FIXED = [
-    "BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "XRPUSDT",
-    "ADAUSDT", "DOGEUSDT", "AVAXUSDT", "LINKUSDT", "DOTUSDT",
-    "APTUSDT", "ARBUSDT", "OPUSDT", "INJUSDT", "SUIUSDT",
-    "SEIUSDT", "FETUSDT", "RENDERUSDT", "JUPUSDT", "PYTHUSDT",
-    "STXUSDT", "ORDIUSDT", "ENAUSDT", "HBARUSDT", "NEARUSDT",
-    "ALGOUSDT", "FILUSDT", "SANDUSDT", "AXSUSDT", "GALAUSDT",
-    "CHZUSDT", "APEUSDT", "GMTUSDT", "DYDXUSDT", "MASKUSDT",
-    "IOTAUSDT", "ZILUSDT", "KSMUSDT", "SKLUSDT", "CRVUSDT",
-    "UNIUSDT", "ATOMUSDT", "LTCUSDT", "MATICUSDT", "TIAUSDT",
-    "WLDUSDT", "CELOUSDT", "FLOWUSDT", "MANAUSDT", "ENAUSDT",
-]
-
-def load_data():
+def load_trades():
     try:
         if os.path.exists(TRADES_FILE):
-            with open(TRADES_FILE, "r") as f:
+            with open(TRADES_FILE,"r") as f:
                 return json.load(f)
-    except Exception as e:
-        print(f"Load error: {e}")
-    return {"signals": [], "stats": {"total": 0, "wins": 0, "losses": 0, "pending": 0, "win_pct": 0.0}}
+    except: pass
+    return {"trades":[], "stats":{"total":0,"wins":0,"losses":0,"pending":0,"total_pct":0}}
 
-def save_data(data):
+def save_trades(data):
     try:
-        with open(TRADES_FILE, "w") as f:
-            json.dump(data, f, indent=2, ensure_ascii=False)
+        with open(TRADES_FILE,"w") as f:
+            json.dump(data, f, indent=2)
     except Exception as e:
-        print(f"Save error: {e}")
+        print(f"خطأ حفظ: {e}")
 
-def log_signal(sym, direction, entry, tp1, tp2, sl, rr,
-               confluence, conf_details, rsi, atr,
-               signal_source, ob, ote, in_ote):
-    data = load_data()
-    sig_id = data["stats"]["total"] + 1
-    signal = {
-        "id": sig_id, "sym": sym, "direction": direction,
-        "entry": entry, "tp1": tp1, "tp2": tp2, "sl": sl, "rr": rr,
-        "confluence": confluence, "conf_details": conf_details,
-        "rsi": rsi, "atr": atr, "source": signal_source,
-        "ob_top": ob["top"], "ob_bottom": ob["bottom"],
-        "ote_low": ote["low"], "ote_high": ote["high"], "in_ote": in_ote,
+def log_signal(sym, signal_type, entry, tp1, tp2, tp3, sl, rr, gain_pct):
+    data = load_trades()
+    trade = {
+        "id": len(data["trades"]) + 1,
+        "sym": sym, "type": signal_type, "entry": entry,
+        "tp1": tp1, "tp2": tp2, "tp3": tp3, "sl": sl, "rr": rr,
+        "gain_24h": gain_pct,
         "time": datetime.now(timezone.utc).isoformat(),
         "timestamp": time.time(),
+        "result": "PENDING", "exit_price": 0, "pct": 0, "checked": False,
         "day": datetime.now(timezone.utc).strftime("%Y-%m-%d"),
-        "result": "PENDING", "exit_price": 0.0, "pnl_pct": 0.0,
     }
-    data["signals"].append(signal)
+    data["trades"].append(trade)
     data["stats"]["total"] += 1
     data["stats"]["pending"] += 1
-    save_data(data)
-    return sig_id
+    save_trades(data)
+    return trade["id"]
 
-def check_signal_result(signal):
+def check_trade_result(trade):
     try:
-        sym = signal["sym"]
-        entry = signal["entry"]
-        tp1 = signal["tp1"]
-        tp2 = signal["tp2"]
-        sl = signal["sl"]
-        direct = signal["direction"]
-        klines = requests.get(
-            f"{BINANCE_BASE}/api/v3/klines",
-            params={"symbol": sym, "interval": "15m", "limit": 30},
-            timeout=10
-        ).json()
-        if not klines or not isinstance(klines, list):
-            return None
-        hit_tp1 = hit_tp2 = hit_sl = False
+        sym=trade["sym"]; entry=trade["entry"]
+        tp1=trade["tp1"]; tp2=trade["tp2"]; tp3=trade["tp3"]; sl=trade["sl"]
+        klines=requests.get(f"{BINANCE_BASE}/api/v3/klines",
+            params={"symbol":sym,"interval":"15m","limit":20},timeout=10).json()
+        if not klines or not isinstance(klines,list): return None
+        t1=t2=t3=hit_sl=False
+        exit_price=float(klines[-1][4])
         for k in klines:
-            h = float(k[2])
-            l = float(k[3])
-            if direct == "LONG":
-                if not hit_tp1 and h >= tp1: hit_tp1 = True
-                if hit_tp1 and not hit_tp2 and h >= tp2: hit_tp2 = True
-                if l <= sl and not hit_tp1: hit_sl = True; break
-            else:
-                if not hit_tp1 and l <= tp1: hit_tp1 = True
-                if hit_tp1 and not hit_tp2 and l <= tp2: hit_tp2 = True
-                if h >= sl and not hit_tp1: hit_sl = True; break
-        if hit_tp2:
-            result = "TP2"; ep = tp2; pnl = abs(tp2 / entry - 1) * 100
-        elif hit_tp1:
-            result = "TP1"; ep = tp1; pnl = abs(tp1 / entry - 1) * 100
-        elif hit_sl:
-            result = "SL"; ep = sl; pnl = -abs(sl / entry - 1) * 100
-        else:
-            ep = float(klines[-1][4])
-            pnl = (ep / entry - 1) * 100 if direct == "LONG" else (entry / ep - 1) * 100
-            result = "OPEN"
-        return {"result": result, "exit_price": ep, "pnl_pct": pnl}
+            h=float(k[2]); l=float(k[3])
+            if not t1 and h>=tp1: t1=True
+            if t1 and not t2 and h>=tp2: t2=True
+            if t2 and not t3 and h>=tp3: t3=True
+            if l<=sl and not t2: hit_sl=True; break
+        if t3: result="TP3"; exit_price=tp3; pct=(tp3/entry-1)*100
+        elif t2: result="TP2"; exit_price=tp2; pct=(tp2/entry-1)*100
+        elif t1 and hit_sl: result="TP1+SL"; exit_price=(tp1+sl)/2; pct=((tp1/entry-1)*100*0.5+(sl/entry-1)*100*0.5)
+        elif t1: result="TP1"; exit_price=tp1; pct=(tp1/entry-1)*100
+        elif hit_sl: result="SL"; exit_price=sl; pct=(sl/entry-1)*100
+        else: result="OPEN"; exit_price=float(klines[-1][4]); pct=(exit_price/entry-1)*100
+        return {"result":result,"exit_price":exit_price,"pct":pct,"t1":t1,"t2":t2,"t3":t3}
     except Exception as e:
-        print(f"Check error {signal['sym']}: {e}")
-        return None
+        print(f"خطأ check_trade {trade['sym']}: {e}"); return None
 
-def update_pending_signals():
-    data = load_data()
-    now = time.time()
-    updated = []
-    for i, sig in enumerate(data["signals"]):
-        if sig["result"] != "PENDING":
-            continue
-        elapsed_hours = (now - sig["timestamp"]) / 3600
-        if elapsed_hours < CFG["check_after_hours"]:
-            continue
-        res = check_signal_result(sig)
-        if res and res["result"] != "OPEN":
-            data["signals"][i]["result"] = res["result"]
-            data["signals"][i]["exit_price"] = res["exit_price"]
-            data["signals"][i]["pnl_pct"] = res["pnl_pct"]
-            data["stats"]["pending"] = max(0, data["stats"]["pending"] - 1)
-            if res["result"] in ["TP1", "TP2"]:
-                data["stats"]["wins"] += 1
-            elif res["result"] == "SL":
-                data["stats"]["losses"] += 1
-            total_decided = data["stats"]["wins"] + data["stats"]["losses"]
-            data["stats"]["win_pct"] = (
-                data["stats"]["wins"] / total_decided * 100
-                if total_decided > 0 else 0.0
-            )
-            updated.append((sig, res))
-    save_data(data)
-    return updated
+def update_pending_trades():
+    data=load_trades(); now=time.time(); updated=[]
+    for i,trade in enumerate(data["trades"]):
+        if trade["result"]!="PENDING": continue
+        if (now-trade["timestamp"])/3600>=CFG["check_after_hours"]:
+            res=check_trade_result(trade)
+            if res and res["result"]!="OPEN":
+                data["trades"][i]["result"]=res["result"]
+                data["trades"][i]["exit_price"]=res["exit_price"]
+                data["trades"][i]["pct"]=res["pct"]
+                data["trades"][i]["checked"]=True
+                data["stats"]["pending"]=max(0,data["stats"]["pending"]-1)
+                data["stats"]["total_pct"]+=res["pct"]
+                if res["result"] in ["TP1","TP2","TP3","TP1+SL"]: data["stats"]["wins"]+=1
+                elif res["result"]=="SL": data["stats"]["losses"]+=1
+                updated.append((trade,res))
+    save_trades(data); return updated
 
-def send_tg(msg):
-    if not TELEGRAM_TOKEN:
-        print("No TG token")
-        return
+def gen_daily_report():
+    data=load_trades()
+    today=datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    day_trades=[t for t in data["trades"] if t.get("day")==today and t["result"]!="PENDING"]
+    if not day_trades:
+        return f"📊 <b>تقرير يومي — {today}</b>\n⏳ لا توجد صفقات محسومة اليوم بعد"
+    wins=[t for t in day_trades if t["result"] in ["TP1","TP2","TP3","TP1+SL"]]
+    losses=[t for t in day_trades if t["result"]=="SL"]
+    total_pct=sum(t["pct"] for t in day_trades)
+    wr=len(wins)/len(day_trades)*100 if day_trades else 0
+    types={}
+    for t in day_trades:
+        tp=t["type"]
+        if tp not in types: types[tp]={"w":0,"l":0,"total":0}
+        types[tp]["total"]+=1
+        if t["result"] in ["TP1","TP2","TP3","TP1+SL"]: types[tp]["w"]+=1
+        else: types[tp]["l"]+=1
+    type_lines=""
+    for tp,v in types.items():
+        emoji="🚀" if "STRONG" in tp else "💥" if "BREAKOUT" in tp else "⚡" if "EARLY" in tp else "🔥" if "MOMENTUM" in tp else "🔄"
+        wr_t=v["w"]/v["total"]*100 if v["total"] else 0
+        type_lines+=f"\n{emoji} {tp}: {v['w']}/{v['total']} ({wr_t:.0f}%)"
+    pnl_color="🟢" if total_pct>0 else "🔴"
+    msg=f"""📊 <b>تقرير يومي — {today}</b>
+━━━━━━━━━━━━━━━
+📈 إجمالي الإشارات: {len(day_trades)}
+✅ رابحة: {len(wins)} | ❌ خاسرة: {len(losses)}
+🎯 نسبة النجاح: {wr:.1f}%
+{pnl_color} إجمالي الربح/الخسارة: {total_pct:+.2f}%
+━━━━━━━━━━━━━━━
+<b>تفصيل حسب النوع:</b>{type_lines}
+━━━━━━━━━━━━━━━"""
+    if wins:
+        best=max(wins,key=lambda x:x["pct"])
+        msg+=f"\n🏆 أفضل صفقة: #{best['id']} {best['sym']} {best['pct']:+.2f}%"
+    if losses:
+        worst=min(losses,key=lambda x:x["pct"])
+        msg+=f"\n💔 أسوأ صفقة: #{worst['id']} {worst['sym']} {worst['pct']:+.2f}%"
+    return msg
+
+def gen_weekly_report():
+    data=load_trades()
+    all_trades=[t for t in data["trades"] if t["result"]!="PENDING"]
+    if not all_trades:
+        return "📊 <b>التقرير الأسبوعي</b>\n⏳ لا توجد صفقات محسومة بعد"
+    wins=[t for t in all_trades if t["result"] in ["TP1","TP2","TP3","TP1+SL"]]
+    losses=[t for t in all_trades if t["result"]=="SL"]
+    total_pct=sum(t["pct"] for t in all_trades)
+    wr=len(wins)/len(all_trades)*100 if all_trades else 0
+    types={}
+    for t in all_trades:
+        tp=t["type"]
+        if tp not in types: types[tp]={"w":0,"l":0,"total":0,"pct":0}
+        types[tp]["total"]+=1; types[tp]["pct"]+=t["pct"]
+        if t["result"] in ["TP1","TP2","TP3","TP1+SL"]: types[tp]["w"]+=1
+        else: types[tp]["l"]+=1
+    tp3_c=len([t for t in all_trades if t["result"]=="TP3"])
+    tp2_c=len([t for t in all_trades if t["result"]=="TP2"])
+    tp1_c=len([t for t in all_trades if t["result"] in ["TP1","TP1+SL"]])
+    type_lines=""
+    for tp,v in sorted(types.items(),key=lambda x:-x[1]["w"]):
+        emoji="🚀" if "STRONG" in tp else "💥" if "BREAKOUT" in tp else "⚡" if "EARLY" in tp else "🔥" if "MOMENTUM" in tp else "🔄"
+        wr_t=v["w"]/v["total"]*100 if v["total"] else 0
+        type_lines+=f"\n{emoji} {tp}: {v['w']}/{v['total']} ({wr_t:.0f}%) | {v['pct']:+.1f}%"
+    pnl_color="🟢" if total_pct>0 else "🔴"
+    msg=f"""📊 <b>التقرير الأسبوعي — GHP Pro v4</b>
+━━━━━━━━━━━━━━━━━━━━
+📈 إجمالي الإشارات: {len(all_trades)}
+✅ رابحة: {len(wins)} | ❌ خاسرة: {len(losses)} | ⏳ معلق: {data['stats']['pending']}
+🎯 <b>نسبة النجاح: {wr:.1f}%</b>
+{pnl_color} <b>إجمالي: {total_pct:+.2f}%</b>
+━━━━━━━━━━━━━━━━━━━━
+🎯 TP3:{tp3_c} | TP2:{tp2_c} | TP1:{tp1_c} | SL:{len(losses)}
+━━━━━━━━━━━━━━━━━━━━
+<b>أداء كل نوع إشارة:</b>{type_lines}
+━━━━━━━━━━━━━━━━━━━━"""
+    if wins:
+        best=max(wins,key=lambda x:x["pct"])
+        avg_win=sum(t["pct"] for t in wins)/len(wins)
+        msg+=f"\n🏆 أفضل صفقة: #{best['id']} {best['sym']} {best['pct']:+.2f}%"
+        msg+=f"\n📈 متوسط الربح: +{avg_win:.2f}%"
+    if losses:
+        avg_loss=sum(t["pct"] for t in losses)/len(losses)
+        msg+=f"\n📉 متوسط الخسارة: {avg_loss:.2f}%"
+    return msg
+
+def gen_signal_check_report(trade, res):
+    emoji={"TP3":"🎯","TP2":"✅","TP1":"👍","TP1+SL":"⚠️","SL":"❌"}.get(res["result"],"⏳")
+    color="🟢" if res["pct"]>0 else "🔴"
+    return f"""{emoji} <b>نتيجة إشارة #{trade['id']} — {trade['sym']}</b>
+نوع: {trade['type']}
+دخول: ${trade['entry']:.4f}
+خروج: ${res['exit_price']:.4f}
+{color} النتيجة: {res['result']} | {res['pct']:+.2f}%
+⏱ بعد {CFG['check_after_hours']} ساعات"""
+
+def ema_h(data, p):
+    if len(data)<p: return []
+    k=2/(p+1); r=[None]*(p-1)
+    e=sum(data[:p])/p; r.append(e)
+    for i in range(p,len(data)): e=data[i]*k+e*(1-k); r.append(e)
+    return r
+
+def ema(data,p): h=ema_h(data,p); return h[-1] if h else None
+def sma(data,p): return None if len(data)<p else sum(data[-p:])/p
+
+def rsi(closes, p=14):
+    if len(closes)<p+1: return None
+    g=l=0
+    for i in range(len(closes)-p, len(closes)):
+        d=closes[i]-closes[i-1]
+        if d>0: g+=d
+        else: l-=d
+    return 100-100/(1+(g/(l or 0.0001)))
+
+def atr(H,L,C,p):
+    if len(C)<p+1: return None
+    return sum(max(H[i]-L[i],abs(H[i]-C[i-1]),abs(L[i]-C[i-1])) for i in range(len(C)-p,len(C)))/p
+
+def macd(closes):
+    if len(closes)<35: return None,None
+    fh=ema_h(closes,12); sh=ema_h(closes,26)
+    ma=[f-s for f,s in zip(fh,sh) if f and s]
+    return (ma[-1],ema(ma,9)) if len(ma)>=9 else (None,None)
+
+def roc(closes, bars=3):
+    if len(closes)<bars+1: return 0
+    return (closes[-1]-closes[-bars-1])/closes[-bars-1]*100
+
+def detect_trendline_break(H, L, C, V, lookback=20):
+    if len(H)<lookback+2: return False,0,0
+    local_highs=[]
+    for i in range(2,lookback):
+        idx=len(H)-i
+        if idx<1: continue
+        if H[idx]>H[idx-1] and H[idx]>H[idx+1]:
+            local_highs.append((idx,H[idx]))
+    if len(local_highs)<2: return False,0,0
+    h1_idx,h1_val=local_highs[0]; h2_idx,h2_val=local_highs[1]
+    if h1_val>=h2_val: return False,0,0
+    if h1_idx<=h2_idx: return False,0,0
+    slope=(h1_val-h2_val)/(h1_idx-h2_idx)
+    trend_level=h1_val+slope*(len(H)-1-h1_idx)
+    curr_close=C[-1]; prev_close=C[-2]; curr_vol=V[-1]; avg_vol=sma(V,20)
+    broke_trend=curr_close>trend_level and prev_close<=trend_level
+    vol_confirm=avg_vol and curr_vol>avg_vol*CFG["breakout_vol_mult"]
+    return broke_trend and vol_confirm,trend_level,slope
+
+def run_ghp(klines_1h, klines_15m=None):
+    if not klines_1h or len(klines_1h)<60: return None
     try:
-        requests.post(
-            f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
-            json={"chat_id": TELEGRAM_CHAT_ID, "text": msg, "parse_mode": "HTML"},
-            timeout=10
-        )
-    except Exception as e:
-        print(f"TG error: {e}")
-
-def get_klines(sym, tf, limit=60):
-    try:
-        return requests.get(
-            f"{BINANCE_BASE}/api/v3/klines",
-            params={"symbol": sym, "interval": tf, "limit": limit},
-            timeout=15
-        ).json()
-    except:
-        return []
-
-def calc_rsi(closes, period=14):
-    if len(closes) < period + 1:
-        return 50.0
-    gains = losses = 0.0
-    for i in range(len(closes) - period, len(closes)):
-        d = closes[i] - closes[i - 1]
-        if d > 0: gains += d
-        else: losses -= d
-    if losses == 0:
-        return 100.0
-    return 100 - 100 / (1 + gains / losses)
-
-def calc_atr(highs, lows, closes, period=14):
-    if len(closes) < period + 1:
-        return 0.0
-    tr_sum = 0.0
-    for i in range(len(closes) - period, len(closes)):
-        tr = max(
-            highs[i] - lows[i],
-            abs(highs[i] - closes[i - 1]),
-            abs(lows[i] - closes[i - 1])
-        )
-        tr_sum += tr
-    return tr_sum / period
-
-def find_market_structure(klines):
-    if len(klines) < 10:
-        return "NEUTRAL"
-    H = [float(k[2]) for k in klines]
-    L = [float(k[3]) for k in klines]
-    n = len(klines)
-    highs, lows = [], []
-    for i in range(2, min(n - 2, 30)):
-        idx = n - 1 - i
-        if idx < 1: continue
-        if H[idx] > H[idx-1] and H[idx] > H[idx+1]:
-            highs.append((idx, H[idx]))
-        if L[idx] < L[idx-1] and L[idx] < L[idx+1]:
-            lows.append((idx, L[idx]))
-    if len(highs) < 2 or len(lows) < 2:
-        return "NEUTRAL"
-    highs.sort(key=lambda x: x[0])
-    lows.sort(key=lambda x: x[0])
-    h1, h2 = highs[-2][1], highs[-1][1]
-    l1, l2 = lows[-2][1], lows[-1][1]
-    if h2 > h1 and l2 > l1: return "BULLISH"
-    if h2 < h1 and l2 < l1: return "BEARISH"
-    return "NEUTRAL"
-
-def find_bos(klines, bias):
-    if len(klines) < 15: return None
-    H = [float(k[2]) for k in klines]
-    L = [float(k[3]) for k in klines]
-    C = [float(k[4]) for k in klines]
-    V = [float(k[5]) for k in klines]
-    n = len(klines)
-    avg_v = sum(V[-20:]) / 20 if len(V) >= 20 else V[-1]
-    lookback = min(15, n - 3)
-    recent_high = max(H[-lookback-1:-1])
-    recent_low  = min(L[-lookback-1:-1])
-    vol_confirm = V[-1] > avg_v * CFG["vol_mult"]
-    if bias == "BULLISH" and C[-1] > recent_high and C[-2] <= recent_high and vol_confirm:
-        return {"type": "BOS", "direction": "LONG", "level": recent_high}
-    if bias == "BEARISH" and C[-1] < recent_low and C[-2] >= recent_low and vol_confirm:
-        return {"type": "BOS", "direction": "SHORT", "level": recent_low}
-    return None
-
-def find_choch(klines, bias):
-    if len(klines) < 20: return None
-    H = [float(k[2]) for k in klines]
-    L = [float(k[3]) for k in klines]
-    C = [float(k[4]) for k in klines]
-    n = len(klines)
-    highs, lows = [], []
-    for i in range(2, min(20, n - 2)):
-        idx = n - 1 - i
-        if H[idx] > H[idx-1] and H[idx] > H[idx+1]: highs.append(H[idx])
-        if L[idx] < L[idx-1] and L[idx] < L[idx+1]: lows.append(L[idx])
-    if not highs or not lows: return None
-    last_high = highs[0]
-    last_low  = lows[0]
-    if bias == "BEARISH" and C[-1] > last_high and C[-2] <= last_high:
-        return {"type": "CHoCH", "direction": "LONG", "level": last_high}
-    if bias == "BULLISH" and C[-1] < last_low and C[-2] >= last_low:
-        return {"type": "CHoCH", "direction": "SHORT", "level": last_low}
-    return None
-
-def find_order_block(klines, direction):
-    if len(klines) < 5: return None
-    O = [float(k[1]) for k in klines]
-    H = [float(k[2]) for k in klines]
-    L = [float(k[3]) for k in klines]
-    C = [float(k[4]) for k in klines]
-    n = len(klines)
-    lookback = min(CFG["ob_lookback"], n - 3)
-    if direction == "LONG":
-        for i in range(2, lookback + 1):
-            idx = n - 1 - i
-            if idx < 1: break
-            if C[idx] < O[idx]:
-                if C[idx+1] > O[idx+1] and (C[idx+1] - O[idx+1]) > abs(C[idx] - O[idx]) * 0.8:
-                    return {"top": O[idx], "bottom": C[idx], "mid": (O[idx] + C[idx]) / 2}
-    else:
-        for i in range(2, lookback + 1):
-            idx = n - 1 - i
-            if idx < 1: break
-            if C[idx] > O[idx]:
-                if C[idx+1] < O[idx+1] and abs(C[idx+1] - O[idx+1]) > abs(C[idx] - O[idx]) * 0.8:
-                    return {"top": C[idx], "bottom": O[idx], "mid": (O[idx] + C[idx]) / 2}
-    return None
-
-def find_fvg(klines, direction, curr_price):
-    if len(klines) < 5: return None
-    H = [float(k[2]) for k in klines]
-    L = [float(k[3]) for k in klines]
-    n = len(klines)
-    lookback = min(15, n - 3)
-    fvgs = []
-    for i in range(1, lookback + 1):
-        idx = n - 1 - i
-        if idx < 1 or idx + 1 >= n: continue
-        if direction == "LONG":
-            gap_top = L[idx+1]; gap_bot = H[idx-1]
-            if gap_top > gap_bot:
-                gs = (gap_top - gap_bot) / gap_bot * 100
-                if gs >= CFG["fvg_min_pct"]:
-                    fvgs.append({"top": gap_top, "bottom": gap_bot,
-                                 "mid": (gap_top + gap_bot) / 2,
-                                 "in_fvg": gap_bot <= curr_price <= gap_top * 1.02})
-        else:
-            gap_top = L[idx-1]; gap_bot = H[idx+1]
-            if gap_top > gap_bot:
-                gs = (gap_top - gap_bot) / gap_bot * 100
-                if gs >= CFG["fvg_min_pct"]:
-                    fvgs.append({"top": gap_top, "bottom": gap_bot,
-                                 "mid": (gap_top + gap_bot) / 2,
-                                 "in_fvg": gap_bot <= curr_price <= gap_top * 1.02})
-    if fvgs:
-        return min(fvgs, key=lambda x: abs(x["mid"] - curr_price))
-    return None
-
-def find_liquidity_sweep(klines):
-    if len(klines) < 10: return None
-    H = [float(k[2]) for k in klines]
-    L = [float(k[3]) for k in klines]
-    C = [float(k[4]) for k in klines]
-    O = [float(k[1]) for k in klines]
-    n = len(klines)
-    lookback = min(20, n - 3)
-    prev_high = max(H[-lookback-1:-2])
-    prev_low  = min(L[-lookback-1:-2])
-    ph = H[-2]; pl = L[-2]; pc = C[-2]
-    cl = C[-1]; op = O[-1]
-    bull_sweep = (pl < prev_low  and pc > prev_low  and cl > op and cl > pc)
-    bear_sweep = (ph > prev_high and pc < prev_high and cl < op and cl < pc)
-    if bull_sweep: return {"type": "BULLISH", "swept_level": prev_low}
-    if bear_sweep: return {"type": "BEARISH", "swept_level": prev_high}
-    return None
-
-def calc_ote(swing_low, swing_high):
-    rng = swing_high - swing_low
+        H1=[float(k[2]) for k in klines_1h]; L1=[float(k[3]) for k in klines_1h]
+        C1=[float(k[4]) for k in klines_1h]; V1=[float(k[5]) for k in klines_1h]
+        O1=[float(k[1]) for k in klines_1h]
+    except: return None
+    n=len(C1)
+    av1=atr(H1,L1,C1,14); rv1=rsi(C1,14)
+    ef1=ema(C1,9); es1=ema(C1,21); et1=ema(C1,50); va1=sma(V1,20)
+    mv1,ms1=macd(C1)
+    fh1=ema_h(C1,9); sh1=ema_h(C1,21)
+    pf1=fh1[-2] if len(fh1)>=2 else None; ps1=sh1[-2] if len(sh1)>=2 else None
+    cross_1h=bool(pf1 and ps1 and pf1<=ps1 and ef1 and es1 and ef1>es1)
+    cl1=C1[-1]; op1=O1[-1]; pc1=C1[-2]; po1=O1[-2]; vol1=V1[-1]
+    hv1=bool(va1 and vol1>va1*CFG["vol_mult"])
+    rh1=bool(rv1 and 50<rv1<CFG["rsi_ob"])
+    at1=bool(et1 and cl1>et1)
+    mb1=bool(mv1 and ms1 and mv1>ms1)
+    be1=cl1>op1 and pc1<po1 and cl1>po1 and op1<pc1
+    body1=abs(cl1-op1)
+    bodies1=[abs(C1[i]-O1[i]) for i in range(max(0,n-11),n-1)]
+    ab1=sum(bodies1)/len(bodies1) if bodies1 else 1
+    sc1=body1>ab1*1.3 and cl1>op1
+    h20_1=max(H1[-21:-1]) if n>=21 else H1[-1]
+    br1=H1[-1]>=h20_1 and cl1>op1
+    roc_1h=roc(C1,CFG["roc_bars"]); momentum_1h=roc_1h>=CFG["roc_min_pct"]
+    tb_1h,_,_=detect_trendline_break(H1,L1,C1,V1,CFG["trend_lookback"])
+    score=0
+    if cross_1h: score+=2
+    if hv1: score+=2
+    if rh1: score+=1
+    if at1: score+=1
+    if mb1: score+=1
+    if be1: score+=1
+    if sc1: score+=1
+    if br1: score+=1
+    if momentum_1h: score+=1
+    if tb_1h: score+=2
+    st=5 if score>=10 else 4 if score>=8 else 3 if score>=6 else 2 if score>=4 else 1
+    cross_15m=False; tb_15m=False; roc_15m=0; momentum_15m=False
+    if klines_15m and len(klines_15m)>=30:
+        try:
+            H15=[float(k[2]) for k in klines_15m]; L15=[float(k[3]) for k in klines_15m]
+            C15=[float(k[4]) for k in klines_15m]; V15=[float(k[5]) for k in klines_15m]
+            ef15=ema(C15,9); es15=ema(C15,21)
+            fh15=ema_h(C15,9); sh15=ema_h(C15,21)
+            pf15=fh15[-2] if len(fh15)>=2 else None; ps15=sh15[-2] if len(sh15)>=2 else None
+            cross_15m=bool(pf15 and ps15 and pf15<=ps15 and ef15 and es15 and ef15>es15)
+            tb_15m,_,_=detect_trendline_break(H15,L15,C15,V15,min(20,len(H15)-2))
+            roc_15m=roc(C15,3); momentum_15m=roc_15m>=CFG["roc_min_pct"]
+        except: pass
+    strong_buy=cross_1h and rh1 and hv1 and at1 and mb1 and (be1 or sc1) and st>=3
+    breakout_buy=tb_1h and hv1 and mb1 and (rv1 and rv1>40) and not strong_buy
+    early_15m=(cross_15m or tb_15m) and momentum_15m and at1 and mb1
+    early_buy=early_15m and (rv1 and rv1>40) and hv1 and not strong_buy and not breakout_buy
+    momentum_buy=momentum_1h and roc_1h>=CFG["momentum_roc_min"] and hv1 and mb1 and (rv1 and rv1>CFG["momentum_rsi_min"]) and at1
+    momentum_buy=momentum_buy and not strong_buy and not breakout_buy and not early_buy
+    early_cond=sum([rh1,hv1,at1,mb1,(be1 or sc1)])
+    reentry=early_cond>=3 and momentum_1h and not strong_buy and not breakout_buy and not early_buy and not momentum_buy
+    if not av1: return None
+    tp1=cl1+av1*CFG["tp1_mult"]; tp2=cl1+av1*CFG["tp2_mult"]
+    tp3=cl1+av1*CFG["tp3_mult"]; sl=cl1-av1*CFG["sl_mult"]
+    t2p=(tp2/cl1-1)*100; slp=(1-sl/cl1)*100; rr=t2p/(slp or 1)
+    vr=vol1/va1 if va1 else 0
     return {
-        "low":  swing_high - rng * CFG["ote_high"],
-        "high": swing_high - rng * CFG["ote_low"],
-        "mid":  swing_high - rng * 0.702,
+        "strong_buy":strong_buy,"breakout_buy":breakout_buy,
+        "early_buy":early_buy,"momentum_buy":momentum_buy,"reentry":reentry,
+        "any_buy":strong_buy or breakout_buy or early_buy or momentum_buy,
+        "st":st,"score":score,"cl":cl1,"tp1":tp1,"tp2":tp2,"tp3":tp3,"sl":sl,
+        "t1p":(tp1/cl1-1)*100,"t2p":t2p,"t3p":(tp3/cl1-1)*100,
+        "slp":slp,"rr":rr,"rsi":rv1,"vr":vr,"roc_1h":roc_1h,"roc_15m":roc_15m,
+        "tb_1h":tb_1h,"tb_15m":tb_15m,"cross_1h":cross_1h,"cross_15m":cross_15m,
+        "hv":hv1,"rh":rh1,"at":at1,"mb":mb1,"momentum":momentum_1h,
     }
 
-def get_pairs():
+def get_market_state():
     try:
-        r = requests.get(f"{BINANCE_BASE}/api/v3/ticker/24hr", timeout=15).json()
-        if not isinstance(r, list): return SYMBOLS_FIXED
-        f = [
-            t for t in r
-            if isinstance(t, dict)
-            and isinstance(t.get("symbol", ""), str)
-            and t.get("symbol", "").endswith("USDT")
-            and not any(x in t.get("symbol", "") for x in ["DOWN", "UP", "BEAR", "BULL"])
-            and CFG["min_gain_pct"] <= abs(float(t.get("priceChangePercent", 0))) <= CFG["max_gain_pct"]
-            and float(t.get("quoteVolume", 0)) > CFG["min_volume_usd"]
-        ]
-        s = sorted(f, key=lambda x: float(x.get("quoteVolume", 0)), reverse=True)
-        dynamic = [t["symbol"] for t in s[:CFG["top_n"]]]
-        combined = list(dict.fromkeys(SYMBOLS_FIXED + dynamic))
-        return combined[:CFG["top_n"]]
-    except:
-        return SYMBOLS_FIXED
+        k=requests.get(f"{BINANCE_BASE}/api/v3/klines",
+            params={"symbol":"BTCUSDT","interval":"1h","limit":55},timeout=10).json()
+        if not k or len(k)<50: return "NEUTRAL",0,0
+        C=[float(x[4]) for x in k]
+        chg_4h=(C[-1]-C[-4])/C[-4]*100
+        chg_24h=(C[-1]-C[-24])/C[-24]*100
+        k2=2/(50+1); e=sum(C[:50])/50
+        for i in range(50,len(C)): e=C[i]*k2+e*(1-k2)
+        btc_above_ema50=C[-1]>e
+        tickers=requests.get(f"{BINANCE_BASE}/api/v3/ticker/24hr",timeout=10).json()
+        if isinstance(tickers,list):
+            usdt=[t for t in tickers if isinstance(t,dict) and t.get("symbol","").endswith("USDT")]
+            gainers=len([t for t in usdt if float(t.get("priceChangePercent",0))>0])
+            gainer_ratio=gainers/len(usdt) if usdt else 0.5
+        else:
+            gainer_ratio=0.5
+        bull_score=0
+        if chg_4h>0.5:        bull_score+=2
+        if chg_4h>-0.5:       bull_score+=1
+        if chg_24h>1:         bull_score+=2
+        if chg_24h>-2:        bull_score+=1
+        if btc_above_ema50:   bull_score+=2
+        if gainer_ratio>0.55: bull_score+=2
+        state="BULL" if bull_score>=7 else "NEUTRAL" if bull_score>=4 else "BEAR"
+        print(f"السوق: {state} | 4h:{chg_4h:.2f}% 24h:{chg_24h:.2f}% | Gainers:{gainer_ratio:.0%} | Score:{bull_score}")
+        return state,chg_4h,chg_24h
+    except Exception as e:
+        print(f"خطأ market_state: {e}"); return "NEUTRAL",0,0
 
 def check_btc():
     try:
-        k = requests.get(
-            f"{BINANCE_BASE}/api/v3/klines",
-            params={"symbol": "BTCUSDT", "interval": "1h", "limit": 5},
-            timeout=10
-        ).json()
-        if not k or len(k) < 2: return True, 0
-        C = [float(x[4]) for x in k]
-        chg = (C[-1] - C[-4]) / C[-4] * 100
-        return chg >= CFG["btc_filter_pct"], chg
-    except:
-        return True, 0
+        k=requests.get(f"{BINANCE_BASE}/api/v3/klines",
+            params={"symbol":"BTCUSDT","interval":"1h","limit":5},timeout=10).json()
+        if not k or len(k)<2: return True,0
+        C=[float(x[4]) for x in k]; chg=(C[-1]-C[-4])/C[-4]*100
+        return chg>=CFG["btc_filter_pct"],chg
+    except: return True,0
 
-def analyze_symbol(sym):
+def get_tickers():
     try:
-        k4h  = get_klines(sym, CFG["tf_4h"],  CFG["candle_limit"])
-        k1h  = get_klines(sym, CFG["tf_1h"],  CFG["candle_limit"])
-        k15m = get_klines(sym, CFG["tf_15m"], CFG["candle_limit"])
-        if not k4h or not k1h or not k15m: return None
-        if len(k4h) < 30 or len(k1h) < 30 or len(k15m) < 20: return None
-        bias = find_market_structure(k4h)
-        if bias == "NEUTRAL": return None
-        bos   = find_bos(k1h, bias)
-        choch = find_choch(k1h, bias)
-        direction     = "LONG" if bias == "BULLISH" else "SHORT"
-        confirmed     = False
-        signal_source = ""
-        if bos and bos["direction"] == direction:
-            confirmed = True; signal_source = "BOS"
-        elif choch and choch["direction"] == direction:
-            confirmed = True; signal_source = "CHoCH"
-        if not confirmed: return None
-        C15 = [float(k[4]) for k in k15m]
-        H15 = [float(k[2]) for k in k15m]
-        L15 = [float(k[3]) for k in k15m]
-        curr_price = C15[-1]
-        rsi = calc_rsi(C15, 14)
-        atr = calc_atr(H15, L15, C15, 14)
-        if direction == "LONG"  and (rsi > 75 or rsi < 30): return None
-        if direction == "SHORT" and (rsi < 25 or rsi > 70): return None
-        ob = find_order_block(k15m, direction)
-        if not ob: return None
-        fvg = find_fvg(k15m, direction, curr_price)
-        liq = find_liquidity_sweep(k15m)
-        swing_low  = min(L15[-20:])
-        swing_high = max(H15[-20:])
-        ote    = calc_ote(swing_low, swing_high)
-        in_ote = ote["low"] <= curr_price <= ote["high"]
-        near_ote = (curr_price < ote["high"] * 1.03 if direction == "LONG"
-                    else curr_price > ote["low"] * 0.97)
-        confluence   = 0
-        conf_details = []
-        if bias != "NEUTRAL":
-            confluence += 2; conf_details.append(f"4H {bias}")
-        if bos:
-            confluence += 2; conf_details.append("BOS 1H")
-        if choch:
-            confluence += 2; conf_details.append("CHoCH 1H")
-        if ob:
-            confluence += 2; conf_details.append("Order Block")
-        if fvg and fvg.get("in_fvg"):
-            confluence += 2; conf_details.append("FVG")
-        elif fvg:
-            confluence += 1; conf_details.append("FVG")
-        if liq and liq["type"] == ("BULLISH" if direction == "LONG" else "BEARISH"):
-            confluence += 2; conf_details.append("Liq Sweep")
-        if in_ote:
-            confluence += 2; conf_details.append("OTE")
-        elif near_ote:
-            confluence += 1; conf_details.append("Near OTE")
-        if confluence < CFG["min_confluence"]: return None
-        if direction == "LONG":
-            sl   = ob["bottom"] * (1 - CFG["sl_buffer"])
-            if sl >= curr_price: sl = curr_price * 0.98
-            risk = curr_price - sl
-            tp1  = curr_price + risk * 2.0
-            tp2  = curr_price + risk * 4.0
-        else:
-            sl   = ob["top"] * (1 + CFG["sl_buffer"])
-            if sl <= curr_price: sl = curr_price * 1.02
-            risk = sl - curr_price
-            tp1  = curr_price - risk * 2.0
-            tp2  = curr_price - risk * 4.0
-        rr = abs(tp1 - curr_price) / abs(sl - curr_price) if abs(sl - curr_price) > 0 else 0
-        if rr < CFG["min_rr"]: return None
-        if direction == "LONG"  and tp1 <= curr_price: return None
-        if direction == "SHORT" and tp1 >= curr_price: return None
-        return {
-            "sym": sym, "direction": direction, "source": signal_source,
-            "bias": bias, "entry": curr_price,
-            "tp1": tp1, "tp2": tp2, "sl": sl, "rr": rr,
-            "confluence": confluence, "conf_details": conf_details,
-            "rsi": rsi, "atr": atr,
-            "ob": ob, "fvg": fvg, "liq": liq,
-            "ote": ote, "in_ote": in_ote,
-        }
-    except Exception as e:
-        print(f"Error {sym}: {e}")
-        return None
+        r=requests.get(f"{BINANCE_BASE}/api/v3/ticker/24hr",timeout=15).json()
+        return r if isinstance(r,list) else []
+    except: return []
 
-def format_signal(r, sig_id):
-    dir_emoji = "\U0001f4c8" if r["direction"] == "LONG" else "\U0001f4c9"
-    dir_ar    = "\u0634\u0631\u0627\u0621" if r["direction"] == "LONG" else "\u0628\u064a\u0639"
-    rr_emoji  = "\u2705" if r["rr"] >= 3.0 else "\U0001f538"
-    ote_emoji = "\u2705" if r["in_ote"] else "\U0001f538"
-    conf_str  = " | ".join(r["conf_details"])
-    t1p = abs(r["tp1"] / r["entry"] - 1) * 100
-    t2p = abs(r["tp2"] / r["entry"] - 1) * 100
-    slp = abs(r["sl"]  / r["entry"] - 1) * 100
-    fvg_line = ""
-    if r.get("fvg") and r["fvg"].get("in_fvg"):
-        fvg_line = f"\n\U0001f537 \u0641\u062c\u0648\u0629 \u0627\u0644\u0633\u0639\u0631: ${r['fvg']['bottom']:.4f} - ${r['fvg']['top']:.4f}"
-    liq_line = ""
-    if r.get("liq"):
-        liq_line = f"\n\U0001f4a7 \u0627\u062c\u062a\u064a\u0627\u062d \u0633\u064a\u0648\u0644\u0629: ${r['liq']['swept_level']:.4f}"
-    return (
-        f"{dir_emoji} <b>\u0625\u0634\u0627\u0631\u0629 SMC #{sig_id} - {r['sym']} ({dir_ar})</b>\n"
-        f"\U0001f4d0 {r['source']} | \u0627\u062a\u062c\u0627\u0647 {r['bias']} \u0639\u0644\u0649 4H\n"
-        f"\u2b50 \u0627\u0644\u062a\u0642\u0627\u0637\u0639: {r['confluence']}/14 \u0646\u0642\u0637\u0629\n"
-        f"\U0001f4cc {conf_str}\n"
-        f"---------------\n"
-        f"\U0001f4b5 \u0633\u0639\u0631 \u0627\u0644\u062f\u062e\u0648\u0644:  ${r['entry']:.4f}\n"
-        f"\U0001f3af \u0647\u062f\u0641 1:   ${r['tp1']:.4f}  (+{t1p:.2f}%)\n"
-        f"\U0001f3af \u0647\u062f\u0641 2:   ${r['tp2']:.4f}  (+{t2p:.2f}%)\n"
-        f"\U0001f6d1 \u0648\u0642\u0641 \u062e\u0633\u0627\u0631\u0629:  ${r['sl']:.4f}  (-{slp:.2f}%)\n"
-        f"\U0001f4ca \u0646\u0633\u0628\u0629 \u0627\u0644\u0631\u0628\u062d: 1:{r['rr']:.2f} {rr_emoji}\n"
-        f"---------------\n"
-        f"\U0001f4e6 \u0628\u0644\u0648\u0643 \u0627\u0644\u0637\u0644\u0628: ${r['ob']['bottom']:.4f} - ${r['ob']['top']:.4f}\n"
-        f"\U0001f3af OTE: ${r['ote']['low']:.4f} - ${r['ote']['high']:.4f} {ote_emoji}"
-        f"{fvg_line}{liq_line}\n"
-        f"---------------\n"
-        f"\U0001f522 RSI: {r['rsi']:.1f} | ATR: ${r['atr']:.4f}\n"
-        f"\U0001f550 {datetime.now(timezone.utc).strftime('%H:%M:%S')} UTC\n"
-        f"<i>\u26a0\ufe0f \u062a\u062d\u0644\u064a\u0644 \u0641\u0642\u0637 - \u0644\u064a\u0633\u062a \u0646\u0635\u064a\u062d\u0629 \u0645\u0627\u0644\u064a\u0629</i>"
-    )
+def filter_gainers(tickers,min_pct,max_pct,top_n):
+    f=[t for t in tickers if isinstance(t,dict) and isinstance(t.get("symbol",""),str)
+       and t.get("symbol","").endswith("USDT")
+       and not any(x in t.get("symbol","") for x in ["DOWN","UP","BEAR","BULL"])
+       and min_pct<=float(t.get("priceChangePercent",0))<=max_pct
+       and float(t.get("quoteVolume",0))>CFG["min_volume_usd"]]
+    return sorted(f,key=lambda x:float(x.get("priceChangePercent",0)),reverse=True)[:top_n]
 
-def format_result(signal, res):
-    result_emoji = {"TP2": "\U0001f3af", "TP1": "\u2705", "SL": "\u274c"}.get(res["result"], "\u23f3")
-    result_ar    = {"TP2": "\u0647\u062f\u0641 2", "TP1": "\u0647\u062f\u0641 1", "SL": "\u0648\u0642\u0641 \u062e\u0633\u0627\u0631\u0629"}.get(res["result"], "\u0645\u0641\u062a\u0648\u062d")
-    color    = "\U0001f7e2" if res["pnl_pct"] > 0 else "\U0001f534"
-    dir_emoji = "\U0001f4c8" if signal["direction"] == "LONG" else "\U0001f4c9"
-    dir_ar    = "\u0634\u0631\u0627\u0621" if signal["direction"] == "LONG" else "\u0628\u064a\u0639"
-    return (
-        f"{result_emoji} <b>\u0646\u062a\u064a\u062c\u0629 #{signal['id']} - {signal['sym']}</b>\n"
-        f"{dir_emoji} {dir_ar} | {signal['source']}\n"
-        f"\U0001f4b5 \u062f\u062e\u0648\u0644: ${signal['entry']:.4f}\n"
-        f"\U0001f6aa \u062e\u0631\u0648\u062c: ${res['exit_price']:.4f}\n"
-        f"{color} <b>{result_ar} | {res['pnl_pct']:+.2f}%</b>\n"
-        f"\u2b50 \u0627\u0644\u062a\u0642\u0627\u0637\u0639: {signal['confluence']}/14\n"
-        f"\u23f1 \u0628\u0639\u062f {CFG['check_after_hours']} \u0633\u0627\u0639\u0627\u062a"
-    )
+def get_klines(sym,tf,limit=120):
+    try:
+        return requests.get(f"{BINANCE_BASE}/api/v3/klines",
+            params={"symbol":sym,"interval":tf,"limit":limit},timeout=15).json()
+    except: return []
 
-def gen_daily_report():
-    data  = load_data()
-    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-    day_sigs = [s for s in data["signals"]
-                if s.get("day") == today and s["result"] != "PENDING"]
-    stats = data["stats"]
-    total_decided = stats["wins"] + stats["losses"]
-    win_pct = stats["wins"] / total_decided * 100 if total_decided > 0 else 0
-    if not day_sigs:
-        return (
-            f"\U0001f4ca <b>\u0627\u0644\u062a\u0642\u0631\u064a\u0631 \u0627\u0644\u064a\u0648\u0645\u064a - {today}</b>\n"
-            f"---------------\n"
-            f"\u23f3 \u0644\u0627 \u062a\u0648\u062c\u062f \u0625\u0634\u0627\u0631\u0627\u062a \u0645\u062d\u0633\u0648\u0645\u0629 \u0627\u0644\u064a\u0648\u0645\n"
-            f"---------------\n"
-            f"\U0001f4c8 \u0627\u0644\u0625\u062c\u0645\u0627\u0644\u064a:\n"
-            f"\U0001f4ca {stats['total']} \u0625\u0634\u0627\u0631\u0629 | \u2705 {stats['wins']} | \u274c {stats['losses']}\n"
-            f"\U0001f3af \u0646\u0633\u0628\u0629 \u0627\u0644\u0646\u062c\u0627\u062d: {win_pct:.1f}%"
-        )
-    wins   = [s for s in day_sigs if s["result"] in ["TP1", "TP2"]]
-    losses = [s for s in day_sigs if s["result"] == "SL"]
-    tp2_c  = len([s for s in wins if s["result"] == "TP2"])
-    tp1_c  = len([s for s in wins if s["result"] == "TP1"])
-    day_wr    = len(wins) / len(day_sigs) * 100
-    total_pnl = sum(s["pnl_pct"] for s in day_sigs)
-    pnl_emoji = "\U0001f7e2" if total_pnl > 0 else "\U0001f534"
-    avg_conf  = sum(s["confluence"] for s in day_sigs) / len(day_sigs)
-    report = (
-        f"\U0001f4ca <b>\u0627\u0644\u062a\u0642\u0631\u064a\u0631 \u0627\u0644\u064a\u0648\u0645\u064a - {today}</b>\n"
-        f"---------------\n"
-        f"\U0001f4c8 \u0625\u0634\u0627\u0631\u0627\u062a \u0627\u0644\u064a\u0648\u0645: {len(day_sigs)}\n"
-        f"\u2705 \u0646\u0627\u062c\u062d\u0629: {len(wins)} | \u274c \u0641\u0627\u0634\u0644\u0629: {len(losses)}\n"
-        f"\U0001f3af \u0646\u0633\u0628\u0629 \u0627\u0644\u064a\u0648\u0645: {day_wr:.1f}%\n"
-        f"{pnl_emoji} \u0627\u0644\u0625\u062c\u0645\u0627\u0644\u064a: {total_pnl:+.2f}%\n"
-        f"---------------\n"
-        f"\U0001f3af \u0647\u062f\u0641 2: {tp2_c} | \u0647\u062f\u0641 1: {tp1_c} | \u274c \u0648\u0642\u0641 \u062e\u0633\u0627\u0631\u0629: {len(losses)}\n"
-        f"\u2b50 \u0645\u062a\u0648\u0633\u0637 \u0627\u0644\u062a\u0642\u0627\u0637\u0639: {avg_conf:.1f}/14\n"
-        f"---------------\n"
-    )
-    if wins:
-        best  = max(wins, key=lambda x: x["pnl_pct"])
-        avg_w = sum(s["pnl_pct"] for s in wins) / len(wins)
-        report += f"\U0001f3c6 \u0627\u0644\u0623\u0641\u0636\u0644: #{best['id']} {best['sym']} {best['pnl_pct']:+.2f}%\n"
-        report += f"\U0001f4c8 \u0645\u062a\u0648\u0633\u0637 \u0627\u0644\u0631\u0628\u062d: +{avg_w:.2f}%\n"
-    if losses:
-        avg_l = sum(s["pnl_pct"] for s in losses) / len(losses)
-        report += f"\U0001f4c9 \u0645\u062a\u0648\u0633\u0637 \u0627\u0644\u062e\u0633\u0627\u0631\u0629: {avg_l:.2f}%\n"
-    report += (
-        f"---------------\n"
-        f"\U0001f4c8 \u0627\u0644\u0625\u062c\u0645\u0627\u0644\u064a \u0627\u0644\u0643\u0644\u064a:\n"
-        f"\U0001f4ca {stats['total']} \u0625\u0634\u0627\u0631\u0629 | \u2705 {stats['wins']} | \u274c {stats['losses']}\n"
-        f"\U0001f3af \u0646\u0633\u0628\u0629 \u0627\u0644\u0646\u062c\u0627\u062d: {win_pct:.1f}% | \u23f3 \u0645\u0639\u0644\u0642\u0629: {stats['pending']}"
-    )
-    return report
+STARS={5:"★★★★★",4:"★★★★☆",3:"★★★☆☆",2:"★★☆☆☆",1:"★☆☆☆☆"}
 
-last_signals = {}
-last_daily_report = -1
+def send_tg(msg):
+    if not TELEGRAM_TOKEN: return
+    try:
+        requests.post(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
+            json={"chat_id":TELEGRAM_CHAT_ID,"text":msg,"parse_mode":"HTML"},timeout=10)
+    except Exception as e: print(f"TG: {e}")
 
-def run_scan():
-    now_str = datetime.now(timezone.utc).strftime("%H:%M:%S")
-    print(f"[{now_str}] Scanning...")
-    btc_ok, btc_chg = check_btc()
-    btc_emoji = "\U0001f7e2" if btc_chg > 0 else "\U0001f534"
-    pairs   = get_pairs()
-    signals = []
-    for sym in pairs:
+def _base(r, gain):
+    g=f"\n📊 ارتفاع 24h: +{gain:.1f}%" if gain>0 else ""
+    return f"""💰 دخول: ${r['cl']:.4f}{g}
+🎯 TP1: ${r['tp1']:.4f} (+{r['t1p']:.2f}%)
+🎯 TP2: ${r['tp2']:.4f} (+{r['t2p']:.2f}%)
+🎯 TP3: ${r['tp3']:.4f} (+{r['t3p']:.2f}%)
+🛑 SL:  ${r['sl']:.4f}  (-{r['slp']:.2f}%)
+📊 R:R: 1:{r['rr']:.2f} {'✅' if r['rr']>=CFG['min_rr'] else '⚠️'}
+📈 RSI: {r['rsi']:.1f} | حجم: {r['vr']:.1f}x
+⚡ زخم 1h: {r['roc_1h']:+.2f}% | 15m: {r['roc_15m']:+.2f}%
+🕐 {datetime.now(timezone.utc).strftime('%H:%M:%S')} UTC
+⚠️ <i>تحليل فقط — ليست نصيحة مالية</i>"""
+
+def send_signal(sym, signal_type, r, gain):
+    STARS_={5:"★★★★★",4:"★★★★☆",3:"★★★☆☆",2:"★★☆☆☆",1:"★☆☆☆☆"}
+    trade_id=log_signal(sym,signal_type,r['cl'],r['tp1'],r['tp2'],r['tp3'],r['sl'],r['rr'],gain)
+    if signal_type=="STRONG":
+        msg=f"""🚀 <b>STRONG BUY #{trade_id} — {sym}</b>
+{STARS_[r['st']]} قوة: {r['st']}/5 | نقاط: {r['score']}/12
+✅ 1h: EMA Cross + GHP كامل
+{_base(r,gain)}"""
+    elif signal_type=="BREAKOUT":
+        tb15="✅ كسر 15m أيضاً!" if r['tb_15m'] else ""
+        msg=f"""💥 <b>BREAKOUT BUY #{trade_id} — {sym}</b>
+{STARS_[r['st']]} قوة: {r['st']}/5
+🔴➡️🟢 كسر الترند الهابط + إغلاق فوقه {tb15}
+{_base(r,gain)}"""
+    elif signal_type=="EARLY":
+        src="EMA Cross 15m" if r['cross_15m'] else "كسر ترند 15m"
+        msg=f"""⚡ <b>EARLY BUY #{trade_id} — {sym}</b>
+{STARS_[r['st']]} قوة: {r['st']}/5 | دخول مبكر
+📊 {src} + تأكيد 1h
+{_base(r,gain)}"""
+    elif signal_type=="MOMENTUM":
+        msg=f"""🔥 <b>MOMENTUM BUY #{trade_id} — {sym}</b>
+{STARS_[r['st']]} قوة: {r['st']}/5
+⚡ زخم: {r['roc_1h']:+.2f}%
+{_base(r,gain)}"""
+    else:
+        msg=f"""🔄 <b>RE-ENTRY #{trade_id} — {sym}</b>
+📊 +{gain:.1f}% اليوم | موجة جديدة
+{STARS_[r['st']]} قوة: {r['st']}/5
+{_base(r,gain)}"""
+    send_tg(msg)
+
+def run_scan(fast=False):
+    now=datetime.now(timezone.utc).strftime('%H:%M:%S')
+    label="⚡ مسح سريع 15د" if fast else "🔍 مسح رئيسي 1س"
+    print(f"[{now}] {label}...")
+    if not fast:
+        market_state,btc_4h,btc_24h=get_market_state()
+    else:
+        btc_ok,btc_4h=check_btc()
+        market_state="BEAR" if not btc_ok else "NEUTRAL"
+        btc_24h=0
+    state_emoji={"BULL":"🟢","NEUTRAL":"🟡","BEAR":"🔴"}.get(market_state,"🟡")
+    btc_s=f"{state_emoji} {market_state} | BTC {btc_4h:+.2f}%"
+    if market_state=="BEAR" and btc_4h<CFG["btc_filter_pct"]:
+        if not fast:
+            send_tg(f"🔴 <b>سوق هابط — إيقاف الإشارات</b>\nBTC {btc_4h:.2f}% 4h\n🕐 {now}")
+        return
+    tickers=get_tickers()
+    if not tickers: return
+    normal=filter_gainers(tickers,CFG["min_gain_pct"],25.0,CFG["top_n"])
+    reentry_c=filter_gainers(tickers,CFG["reentry_min_gain"],CFG["max_gain_pct"],20)
+    results=[]; strong=[]; breakout=[]; early=[]; momentum=[]; reentry=[]
+    for t in normal:
+        sym=t["symbol"]; gain=float(t.get("priceChangePercent",0))
         try:
-            last = last_signals.get(sym, 0)
-            if time.time() - last < CFG["signal_cooldown_hrs"] * 3600:
-                continue
-            r = analyze_symbol(sym)
+            r=run_ghp(get_klines(sym,CFG["tf_main"],120),get_klines(sym,CFG["tf_fast"],60))
             if r:
-                signals.append(r)
-            time.sleep(0.3)
-        except Exception as e:
-            print(f"Error {sym}: {e}")
-    signals.sort(key=lambda x: (x["confluence"], x["rr"]), reverse=True)
-    bull_c = len([s for s in signals if s["direction"] == "LONG"])
-    bear_c = len([s for s in signals if s["direction"] == "SHORT"])
-    data  = load_data()
-    stats = data["stats"]
-    total_decided = stats["wins"] + stats["losses"]
-    win_pct = stats["wins"] / total_decided * 100 if total_decided > 0 else 0
-    send_tg(
-        f"\u26a1 <b>\u0645\u0633\u062d SMC Bot</b>\n"
-        f"{btc_emoji} BTC: {btc_chg:+.2f}%\n"
-        f"\U0001f4ca \u0627\u0644\u0623\u0632\u0648\u0627\u062c: {len(pairs)} | \U0001f4c8 {bull_c} | \U0001f4c9 {bear_c}\n"
-        f"\U0001f3af \u0627\u0644\u0625\u062c\u0645\u0627\u0644\u064a: {stats['total']} | \u2705 {stats['wins']} | \u0646\u0633\u0628\u0629: {win_pct:.1f}%\n"
-        f"\U0001f550 {now_str} UTC"
-    )
-    sent = 0
-    for r in signals[:5]:
-        sig_id = log_signal(
-            r["sym"], r["direction"], r["entry"],
-            r["tp1"], r["tp2"], r["sl"], r["rr"],
-            r["confluence"], r["conf_details"],
-            r["rsi"], r["atr"], r["source"],
-            r["ob"], r["ote"], r["in_ote"]
-        )
-        send_tg(format_signal(r, sig_id))
-        last_signals[r["sym"]] = time.time()
-        sent += 1
-        time.sleep(0.5)
-    print(f"Sent {sent} signals")
+                r["sym"]=sym; r["gain"]=gain; results.append(r)
+                if r["strong_buy"] and r["rr"]>=CFG["min_rr"]:
+                    strong.append(r)
+                elif r["breakout_buy"] and r["rr"]>=1.5 and market_state!="BEAR":
+                    breakout.append(r)
+                elif r["early_buy"] and r["rr"]>=1.5 and market_state=="BULL":
+                    early.append(r)
+                elif r["momentum_buy"] and r["rr"]>=1.5 and market_state=="BULL":
+                    momentum.append(r)
+            time.sleep(0.15)
+        except Exception as e: print(f"خطأ {sym}: {e}")
+    reentry_syms={t["symbol"] for t in normal}
+    for t in reentry_c:
+        sym=t["symbol"]
+        if sym in reentry_syms: continue
+        gain=float(t.get("priceChangePercent",0))
+        try:
+            r=run_ghp(get_klines(sym,CFG["tf_main"],120),get_klines(sym,CFG["tf_fast"],60))
+            if r and r["rr"]>=1.5 and r["momentum"] and r["hv"] and r["mb"]:
+                r["sym"]=sym; r["gain"]=gain; reentry.append(r)
+            time.sleep(0.15)
+        except Exception as e: print(f"خطأ {sym}: {e}")
+    strong.sort(key=lambda x:(x["st"],x["rr"]),reverse=True)
+    breakout.sort(key=lambda x:(x.get("tb_15m",False),x["rr"]),reverse=True)
+    early.sort(key=lambda x:x["rr"],reverse=True)
+    momentum.sort(key=lambda x:x["roc_1h"],reverse=True)
+    reentry.sort(key=lambda x:x["rr"],reverse=True)
+    send_tg(f"""{label} — GHP Pro v4
+{btc_s}
+📊 محلل: {len(results)} | 🚀 {len(strong)} | 💥 {len(breakout)} | ⚡ {len(early)} | 🔥 {len(momentum)} | 🔄 {len(reentry)}
+🕐 {now} UTC""")
+    for r in strong[:5]:   send_signal(r["sym"],"STRONG",r,r["gain"]); time.sleep(0.5)
+    for r in breakout[:4]: send_signal(r["sym"],"BREAKOUT",r,r["gain"]); time.sleep(0.5)
+    for r in early[:3]:    send_signal(r["sym"],"EARLY",r,r["gain"]); time.sleep(0.5)
+    for r in momentum[:3]: send_signal(r["sym"],"MOMENTUM",r,r["gain"]); time.sleep(0.5)
+    for r in reentry[:5]:  send_signal(r["sym"],"REENTRY",r,r["gain"]); time.sleep(0.5)
+    print(f"✅ {len(strong)}S {len(breakout)}B {len(early)}E {len(momentum)}M {len(reentry)}R")
 
-def check_results_and_report():
-    global last_daily_report
-    updated = update_pending_signals()
-    for signal, res in updated:
-        send_tg(format_result(signal, res))
-        print(f"Result #{signal['id']} {signal['sym']}: {res['result']} {res['pnl_pct']:+.2f}%")
-    now = datetime.now(timezone.utc)
-    if now.hour == CFG["daily_report_hour"] and 0 <= now.minute < 15:
-        if last_daily_report != now.day:
+last_daily_report=-1
+last_weekly_report=-1
+
+def check_reports():
+    global last_daily_report,last_weekly_report
+    now=datetime.now(timezone.utc)
+    if now.hour==CFG["daily_report_hour"] and 0<=now.minute<15:
+        if last_daily_report!=now.day:
             send_tg(gen_daily_report())
-            last_daily_report = now.day
-            print("Daily report sent.")
+            last_daily_report=now.day
+            print("📊 أُرسل التقرير اليومي")
+    if now.weekday()==CFG["weekly_report_day"] and now.hour==CFG["weekly_report_hour"] and now.minute<5:
+        week=now.isocalendar()[1]
+        if last_weekly_report!=week:
+            send_tg(gen_weekly_report())
+            last_weekly_report=week
+            print("📊 أُرسل التقرير الأسبوعي")
+    updated=update_pending_trades()
+    for trade,res in updated:
+        send_tg(gen_signal_check_report(trade,res))
+        print(f"📊 #{trade['id']} {trade['sym']}: {res['result']} {res['pct']:+.2f}%")
 
-if __name__ == "__main__":
-    print("SMC Signals Bot starting...")
-    data  = load_data()
-    stats = data["stats"]
-    send_tg(
-        f"\U0001f4d0 <b>SMC Signals Bot \u0628\u062f\u0623!</b>\n\n"
-        f"\u2b50 \u0623\u062f\u0646\u0649 \u062a\u0642\u0627\u0637\u0639: {CFG['min_confluence']}/14\n"
-        f"\U0001f4d0 \u0623\u062f\u0646\u0649 R:R: {CFG['min_rr']}\n"
-        f"\u23f1 \u0646\u062a\u064a\u062c\u0629 \u0643\u0644 \u0625\u0634\u0627\u0631\u0629 \u0628\u0639\u062f: {CFG['check_after_hours']} \u0633\u0627\u0639\u0627\u062a\n"
-        f"\U0001f4c5 \u062a\u0642\u0631\u064a\u0631 \u064a\u0648\u0645\u064a: {CFG['daily_report_hour']}:00 UTC\n\n"
-        f"\U0001f4e6 \u0627\u0644\u0625\u062c\u0645\u0627\u0644\u064a: {stats['total']} | \u2705 {stats['wins']} | \u274c {stats['losses']}"
-    )
+if __name__=="__main__":
+    print("⚡ GHP Pro v4 يعمل!")
+    data=load_trades()
+    send_tg(f"""⚡ <b>GHP Pro v4 بدأ!</b>
+
+🆕 <b>تحديثات اليوم:</b>
+🟢🟡🔴 مؤشر اتجاه السوق الكلي
+🔥 MOMENTUM أشد شروطاً (ROC>8% RSI>55)
+🛡 SL أوسع في السوق الهابط
+📊 الإشارات تتكيف مع السوق تلقائياً
+🔄 REENTRY رُفع إلى 5 إشارات
+
+📋 <b>نظام التقارير:</b>
+⏱ فوري — نتيجة كل إشارة بعد 4 ساعات
+📅 يومي — 20:00 UTC (23:00 بتوقيت السعودية)
+📊 أسبوعي — الجمعة 20:00 UTC
+
+📦 صفقات محفوظة: {data['stats']['total']}
+✅ رابحة: {data['stats']['wins']} | ❌ خاسرة: {data['stats']['losses']}""")
     while True:
         try:
-            run_scan()
-            check_results_and_report()
-            time.sleep(CFG["scan_interval"] * 60)
+            run_scan(fast=False); check_reports()
+            for _ in range(3):
+                time.sleep(CFG["fast_interval"]*60)
+                run_scan(fast=True); check_reports()
+            time.sleep(CFG["fast_interval"]*60)
         except KeyboardInterrupt:
-            send_tg("\u23f9 SMC Bot \u062a\u0648\u0642\u0641")
-            print("Bot stopped.")
-            break
+            send_tg("⏹ GHP Pro v4 توقف"); break
         except Exception as e:
-            print(f"Main error: {e}")
-            time.sleep(60)
+            print(f"❌ {e}"); time.sleep(60)
