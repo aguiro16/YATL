@@ -7,24 +7,34 @@ TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "400815773")
 
 
 def format_signal(signal: dict) -> str:
-    symbol   = signal["symbol"].replace("USDT", "")
+    symbol    = signal["symbol"].replace("USDT", "")
     buy_low, buy_high = signal["buy_zone"]
-    targets  = signal["targets"]
-    stop     = signal["stop"]
-    rr       = signal["rr"]
-    strength = signal["channel_strength"]
-    number   = signal.get("signal_number", "?")
+    targets   = signal["targets"]
+    stop      = signal["stop"]
+    rr        = signal["rr"]
+    strength  = signal["channel_strength"]
+    number    = signal.get("signal_number", "?")
+    direction = signal.get("direction", "LONG")
+
+    if direction == "LONG":
+        icon        = "✅ 🟢 LONG"
+        entry_label = "🔱 Buy"
+        stop_label  = "🔴 STOP: اغلاق 4H أقل من"
+    else:
+        icon        = "⚡ 🔴 SHORT"
+        entry_label = "🔻 Sell"
+        stop_label  = "🔴 STOP: اغلاق 4H أعلى من"
 
     msg = (
-        f"#{number:03d} ✅ {symbol}/USDT\n\n"
-        f"🔱 Buy: {buy_low} - {buy_high}\n\n"
+        f"#{number:03d} {icon} {symbol}/USDT\n\n"
+        f"{entry_label}: {buy_low} - {buy_high}\n\n"
         f"Target 🎯:\n"
         f"T1: {targets.get('T1', '-')}\n"
         f"T2: {targets.get('T2', '-')}\n"
         f"T3: {targets.get('T3', '-')}\n"
         f"T4: {targets.get('T4', '-')}\n"
         f"T5: {targets.get('T5', '-')}\n\n"
-        f"🔴 STOP: اغلاق 4H أقل من {stop}\n\n"
+        f"{stop_label} {stop}\n\n"
         f"📊 RR: {rr} | قوة القناة: {strength}%"
     )
     return msg
@@ -55,5 +65,5 @@ async def send_telegram(session: aiohttp.ClientSession, message: str) -> bool:
 
 
 async def send_startup_message(session: aiohttp.ClientSession):
-    msg = "🤖 <b>F35 Signal Bot</b> started!\n📡 Scanning Binance Futures..."
+    msg = "🤖 <b>F35 Signal Bot</b> started!\n📡 Scanning Long & Short on Binance Futures..."
     await send_telegram(session, msg)
