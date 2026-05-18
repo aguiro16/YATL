@@ -4,9 +4,7 @@ import logging
 from fetcher import get_top_futures_pairs, get_klines
 from strategy import analyze_pair
 from telegram_sender import send_telegram, send_startup_message, format_signal
-from database import save_signal
-
-sent_signals: set = set()
+from database import save_signal, is_signal_sent_recently, get_next_signal_number
 
 SCAN_INTERVAL_SECONDS = 4 * 60 * 60
 MAX_PAIRS_PER_SCAN = 80
@@ -14,14 +12,15 @@ DELAY_BETWEEN_PAIRS = 0.3
 
 
 async def scan_once(session: aiohttp.ClientSession):
-    global sent_signals
-
     logging.info("🔍 Starting scan...")
     pairs = await get_top_futures_pairs(session, limit=MAX_PAIRS_PER_SCAN)
     signals_found = 0
 
     for symbol in pairs:
         try:
+            if is_signal_sent_recently(symbol, hours=96):
+                continue
+
             df_4h = await get_klines(session, symbol, "4h", limit=100)
             await asyncio.sleep(DELAY_BETWEEN_PAIRS)
             df_1d = await get_klines(session, symbol, "1d", limit=100)
@@ -29,14 +28,15 @@ async def scan_once(session: aiohttp.ClientSession):
 
             result = analyze_pair(df_4h, df_1d, symbol)
 
-            if result and symbol not in sent_signals:
+            if result:
+                signal_number = get_next_signal_number()
+                result["signal_number"] = signal_number
                 message = format_signal(result)
                 success = await send_telegram(session, message)
                 if success:
                     save_signal(result)
-                    sent_signals.add(symbol)
                     signals_found += 1
-                    logging.info(f"📡 Signal sent: {symbol}")
+                    logging.info(f"📡 Signal #{signal_number} sent: {symbol}")
                     await asyncio.sleep(2)
 
         except Exception as e:
@@ -44,7 +44,6 @@ async def scan_once(session: aiohttp.ClientSession):
             continue
 
     logging.info(f"✅ Scan done. Signals found: {signals_found}")
-    sent_signals.clear()
 
 
 async def run_scanner():
