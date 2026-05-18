@@ -22,12 +22,24 @@ async def check_and_close_signals(session: aiohttp.ClientSession):
             current_price = df["close"].iloc[-1]
             low_4h        = df["low"].iloc[-1]
 
+            # حساب مدة الصفقة
+            sent_at  = datetime.fromisoformat(sig["sent_at"])
+            duration = datetime.now(timezone.utc) - sent_at.replace(tzinfo=timezone.utc)
+            hours    = int(duration.total_seconds() // 3600)
+
             # ضرب Stop
             if low_4h < sig["stop"]:
                 profit_pct = round(
                     (sig["stop"] - sig["entry_price"]) / sig["entry_price"] * 100, 2
                 )
                 close_signal(sig["id"], "LOSS", profit_pct, 0)
+
+                msg = (
+                    f"❌ {sig['symbol']} — Stop ضُرب\n"
+                    f"📉 خسارة: {profit_pct:+.2f}%\n"
+                    f"⏱ مدة الصفقة: {hours} ساعة"
+                )
+                await send_telegram(session, msg)
                 logging.info(f"❌ STOP hit: {sig['symbol']}")
 
             # وصل T1
@@ -36,6 +48,13 @@ async def check_and_close_signals(session: aiohttp.ClientSession):
                     (sig["t1"] - sig["entry_price"]) / sig["entry_price"] * 100, 2
                 )
                 close_signal(sig["id"], "WIN", profit_pct, 1)
+
+                msg = (
+                    f"✅ {sig['symbol']} — T1 تحقق! 🎯\n"
+                    f"💰 ربح: {profit_pct:+.2f}%\n"
+                    f"⏱ مدة الصفقة: {hours} ساعة"
+                )
+                await send_telegram(session, msg)
                 logging.info(f"✅ T1 hit: {sig['symbol']}")
 
         except Exception as e:
@@ -94,7 +113,7 @@ def build_weekly_report(signals: list) -> str:
 
 async def run_reporter():
     """
-    كل 30 دقيقة: يتحقق من الإشارات المفتوحة
+    كل 30 دقيقة: يتحقق من الإشارات المفتوحة ويرسل نتيجتها فوراً
     08:00 UTC يومياً (= 11:00 AM السعودية): تقرير يومي
     كل جمعة 08:00 UTC: تقرير أسبوعي + تحليل AI
     """
@@ -106,6 +125,7 @@ async def run_reporter():
             try:
                 now = datetime.now(timezone.utc)
 
+                # فحص الإشارات المفتوحة وإرسال النتيجة فوراً
                 await check_and_close_signals(session)
 
                 # تقرير يومي
