@@ -10,27 +10,51 @@ def init_db():
     c = conn.cursor()
     c.execute("""
         CREATE TABLE IF NOT EXISTS signals (
-            id          INTEGER PRIMARY KEY AUTOINCREMENT,
-            symbol      TEXT NOT NULL,
-            buy_low     REAL,
-            buy_high    REAL,
-            stop        REAL,
-            t1          REAL,
-            t2          REAL,
-            t3          REAL,
-            t4          REAL,
-            t5          REAL,
-            rr          REAL,
-            entry_price REAL,
-            result      TEXT DEFAULT 'OPEN',
-            profit_pct  REAL DEFAULT 0,
-            hit_target  INTEGER DEFAULT 0,
-            sent_at     TEXT,
-            closed_at   TEXT
+            id               INTEGER PRIMARY KEY AUTOINCREMENT,
+            signal_number    INTEGER,
+            symbol           TEXT NOT NULL,
+            buy_low          REAL,
+            buy_high         REAL,
+            stop             REAL,
+            t1               REAL,
+            t2               REAL,
+            t3               REAL,
+            t4               REAL,
+            t5               REAL,
+            rr               REAL,
+            channel_strength REAL,
+            entry_price      REAL,
+            result           TEXT DEFAULT 'OPEN',
+            profit_pct       REAL DEFAULT 0,
+            hit_target       INTEGER DEFAULT 0,
+            sent_at          TEXT,
+            closed_at        TEXT
         )
     """)
     conn.commit()
     conn.close()
+
+
+def get_next_signal_number() -> int:
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("SELECT COUNT(*) FROM signals")
+    count = c.fetchone()[0]
+    conn.close()
+    return count + 1
+
+
+def is_signal_sent_recently(symbol: str, hours: int = 96) -> bool:
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("""
+        SELECT COUNT(*) FROM signals
+        WHERE symbol = ?
+        AND sent_at >= datetime('now', ?)
+    """, (symbol, f'-{hours} hours'))
+    count = c.fetchone()[0]
+    conn.close()
+    return count > 0
 
 
 def save_signal(signal: dict):
@@ -41,9 +65,11 @@ def save_signal(signal: dict):
     entry_price = round((buy_low + buy_high) / 2, 8)
     c.execute("""
         INSERT INTO signals
-        (symbol, buy_low, buy_high, stop, t1, t2, t3, t4, t5, rr, entry_price, sent_at)
-        VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
+        (signal_number, symbol, buy_low, buy_high, stop,
+         t1, t2, t3, t4, t5, rr, channel_strength, entry_price, sent_at)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
     """, (
+        signal.get("signal_number"),
         signal["symbol"],
         buy_low,
         buy_high,
@@ -54,6 +80,7 @@ def save_signal(signal: dict):
         targets.get("T4"),
         targets.get("T5"),
         signal["rr"],
+        signal.get("channel_strength"),
         entry_price,
         datetime.utcnow().isoformat()
     ))
