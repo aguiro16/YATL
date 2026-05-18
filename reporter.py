@@ -22,10 +22,10 @@ async def check_and_close_signals(session: aiohttp.ClientSession):
             current_price = df["close"].iloc[-1]
             low_4h        = df["low"].iloc[-1]
 
-            # حساب مدة الصفقة
             sent_at  = datetime.fromisoformat(sig["sent_at"])
             duration = datetime.now(timezone.utc) - sent_at.replace(tzinfo=timezone.utc)
             hours    = int(duration.total_seconds() // 3600)
+            number   = sig.get("signal_number", "?")
 
             # ضرب Stop
             if low_4h < sig["stop"]:
@@ -33,9 +33,8 @@ async def check_and_close_signals(session: aiohttp.ClientSession):
                     (sig["stop"] - sig["entry_price"]) / sig["entry_price"] * 100, 2
                 )
                 close_signal(sig["id"], "LOSS", profit_pct, 0)
-
                 msg = (
-                    f"❌ {sig['symbol']} — Stop ضُرب\n"
+                    f"#{number:03d} ❌ {sig['symbol']} — Stop ضُرب\n"
                     f"📉 خسارة: {profit_pct:+.2f}%\n"
                     f"⏱ مدة الصفقة: {hours} ساعة"
                 )
@@ -48,9 +47,8 @@ async def check_and_close_signals(session: aiohttp.ClientSession):
                     (sig["t1"] - sig["entry_price"]) / sig["entry_price"] * 100, 2
                 )
                 close_signal(sig["id"], "WIN", profit_pct, 1)
-
                 msg = (
-                    f"✅ {sig['symbol']} — T1 تحقق! 🎯\n"
+                    f"#{number:03d} ✅ {sig['symbol']} — T1 تحقق! 🎯\n"
                     f"💰 ربح: {profit_pct:+.2f}%\n"
                     f"⏱ مدة الصفقة: {hours} ساعة"
                 )
@@ -81,7 +79,8 @@ def build_daily_report(signals: list) -> str:
     ]
     for s in signals:
         icon = "✅" if s["result"] == "WIN" else "❌"
-        lines.append(f"{icon} {s['symbol']} → {s['profit_pct']:+.2f}%")
+        num  = s.get("signal_number", "?")
+        lines.append(f"#{num:03d} {icon} {s['symbol']} → {s['profit_pct']:+.2f}%")
 
     return "\n".join(lines)
 
@@ -105,18 +104,13 @@ def build_weekly_report(signals: list) -> str:
         f"✅ رابح: {wins} ({winrate}%)",
         f"❌ خاسر: {losses}",
         f"💰 صافي الربح: {total_profit:+.2f}%",
-        f"🏆 أفضل صفقة: {best['symbol']} ({best['profit_pct']:+.2f}%)",
-        f"💀 أسوأ صفقة: {worst['symbol']} ({worst['profit_pct']:+.2f}%)",
+        f"🏆 أفضل صفقة: #{best.get('signal_number','?'):03d} {best['symbol']} ({best['profit_pct']:+.2f}%)",
+        f"💀 أسوأ صفقة: #{worst.get('signal_number','?'):03d} {worst['symbol']} ({worst['profit_pct']:+.2f}%)",
     ]
     return "\n".join(lines)
 
 
 async def run_reporter():
-    """
-    كل 30 دقيقة: يتحقق من الإشارات المفتوحة ويرسل نتيجتها فوراً
-    08:00 UTC يومياً (= 11:00 AM السعودية): تقرير يومي
-    كل جمعة 08:00 UTC: تقرير أسبوعي + تحليل AI
-    """
     sent_daily_today  = None
     sent_weekly_today = None
 
@@ -125,10 +119,8 @@ async def run_reporter():
             try:
                 now = datetime.now(timezone.utc)
 
-                # فحص الإشارات المفتوحة وإرسال النتيجة فوراً
                 await check_and_close_signals(session)
 
-                # تقرير يومي
                 if now.hour == 8 and sent_daily_today != now.date():
                     signals_today = get_signals_last_days(1)
                     report = build_daily_report(signals_today)
@@ -136,13 +128,11 @@ async def run_reporter():
                     sent_daily_today = now.date()
                     logging.info("📋 Daily report sent")
 
-                # تقرير أسبوعي كل جمعة
                 if now.weekday() == 4 and now.hour == 8 and sent_weekly_today != now.date():
                     signals_week = get_signals_last_days(7)
                     weekly = build_weekly_report(signals_week)
                     await send_telegram(session, weekly)
                     await asyncio.sleep(3)
-
                     ai_report = await analyze_with_ai(signals_week)
                     await send_telegram(session, f"🤖 تحليل AI:\n\n{ai_report}")
                     sent_weekly_today = now.date()
