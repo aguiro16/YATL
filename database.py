@@ -13,6 +13,7 @@ def init_db():
             id               INTEGER PRIMARY KEY AUTOINCREMENT,
             signal_number    INTEGER,
             symbol           TEXT NOT NULL,
+            direction        TEXT DEFAULT 'LONG',
             buy_low          REAL,
             buy_high         REAL,
             stop             REAL,
@@ -60,17 +61,18 @@ def is_signal_sent_recently(symbol: str, hours: int = 96) -> bool:
 def save_signal(signal: dict):
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
-    targets = signal["targets"]
+    targets     = signal["targets"]
     buy_low, buy_high = signal["buy_zone"]
     entry_price = round((buy_low + buy_high) / 2, 8)
     c.execute("""
         INSERT INTO signals
-        (signal_number, symbol, buy_low, buy_high, stop,
+        (signal_number, symbol, direction, buy_low, buy_high, stop,
          t1, t2, t3, t4, t5, rr, channel_strength, entry_price, sent_at)
-        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
     """, (
         signal.get("signal_number"),
         signal["symbol"],
+        signal.get("direction", "LONG"),
         buy_low,
         buy_high,
         signal["stop"],
