@@ -13,9 +13,10 @@ def format_signal(signal: dict) -> str:
     stop     = signal["stop"]
     rr       = signal["rr"]
     strength = signal["channel_strength"]
+    number   = signal.get("signal_number", "?")
 
     msg = (
-        f"✅ {symbol}/USDT\n\n"
+        f"#{number:03d} ✅ {symbol}/USDT\n\n"
         f"🔱 Buy: {buy_low} - {buy_high}\n\n"
         f"Target 🎯:\n"
         f"T1: {targets.get('T1', '-')}\n"
