@@ -21,39 +21,69 @@ async def check_and_close_signals(session: aiohttp.ClientSession):
 
             current_price = df["close"].iloc[-1]
             low_4h        = df["low"].iloc[-1]
+            high_4h       = df["high"].iloc[-1]
+            direction     = sig.get("direction", "LONG")
 
             sent_at  = datetime.fromisoformat(sig["sent_at"])
             duration = datetime.now(timezone.utc) - sent_at.replace(tzinfo=timezone.utc)
             hours    = int(duration.total_seconds() // 3600)
             number   = sig.get("signal_number", "?")
 
-            # ضرب Stop
-            if low_4h < sig["stop"]:
-                profit_pct = round(
-                    (sig["stop"] - sig["entry_price"]) / sig["entry_price"] * 100, 2
-                )
-                close_signal(sig["id"], "LOSS", profit_pct, 0)
-                msg = (
-                    f"#{number:03d} ❌ {sig['symbol']} — Stop ضُرب\n"
-                    f"📉 خسارة: {profit_pct:+.2f}%\n"
-                    f"⏱ مدة الصفقة: {hours} ساعة"
-                )
-                await send_telegram(session, msg)
-                logging.info(f"❌ STOP hit: {sig['symbol']}")
+            if direction == "LONG":
+                # ضرب Stop للونق
+                if low_4h < sig["stop"]:
+                    profit_pct = round(
+                        (sig["stop"] - sig["entry_price"]) / sig["entry_price"] * 100, 2
+                    )
+                    close_signal(sig["id"], "LOSS", profit_pct, 0)
+                    msg = (
+                        f"#{number:03d} ❌ {sig['symbol']} LONG — Stop ضُرب\n"
+                        f"📉 خسارة: {profit_pct:+.2f}%\n"
+                        f"⏱ مدة الصفقة: {hours} ساعة"
+                    )
+                    await send_telegram(session, msg)
+                    logging.info(f"❌ LONG STOP hit: {sig['symbol']}")
 
-            # وصل T1
-            elif current_price >= sig["t1"]:
-                profit_pct = round(
-                    (sig["t1"] - sig["entry_price"]) / sig["entry_price"] * 100, 2
-                )
-                close_signal(sig["id"], "WIN", profit_pct, 1)
-                msg = (
-                    f"#{number:03d} ✅ {sig['symbol']} — T1 تحقق! 🎯\n"
-                    f"💰 ربح: {profit_pct:+.2f}%\n"
-                    f"⏱ مدة الصفقة: {hours} ساعة"
-                )
-                await send_telegram(session, msg)
-                logging.info(f"✅ T1 hit: {sig['symbol']}")
+                elif current_price >= sig["t1"]:
+                    profit_pct = round(
+                        (sig["t1"] - sig["entry_price"]) / sig["entry_price"] * 100, 2
+                    )
+                    close_signal(sig["id"], "WIN", profit_pct, 1)
+                    msg = (
+                        f"#{number:03d} ✅ {sig['symbol']} LONG — T1 تحقق! 🎯\n"
+                        f"💰 ربح: {profit_pct:+.2f}%\n"
+                        f"⏱ مدة الصفقة: {hours} ساعة"
+                    )
+                    await send_telegram(session, msg)
+                    logging.info(f"✅ LONG T1 hit: {sig['symbol']}")
+
+            else:  # SHORT
+                # ضرب Stop للشورت
+                if high_4h > sig["stop"]:
+                    profit_pct = round(
+                        (sig["entry_price"] - sig["stop"]) / sig["entry_price"] * 100, 2
+                    )
+                    close_signal(sig["id"], "LOSS", profit_pct, 0)
+                    msg = (
+                        f"#{number:03d} ❌ {sig['symbol']} SHORT — Stop ضُرب\n"
+                        f"📉 خسارة: {profit_pct:+.2f}%\n"
+                        f"⏱ مدة الصفقة: {hours} ساعة"
+                    )
+                    await send_telegram(session, msg)
+                    logging.info(f"❌ SHORT STOP hit: {sig['symbol']}")
+
+                elif current_price <= sig["t1"]:
+                    profit_pct = round(
+                        (sig["entry_price"] - sig["t1"]) / sig["entry_price"] * 100, 2
+                    )
+                    close_signal(sig["id"], "WIN", profit_pct, 1)
+                    msg = (
+                        f"#{number:03d} ✅ {sig['symbol']} SHORT — T1 تحقق! 🎯\n"
+                        f"💰 ربح: {profit_pct:+.2f}%\n"
+                        f"⏱ مدة الصفقة: {hours} ساعة"
+                    )
+                    await send_telegram(session, msg)
+                    logging.info(f"✅ SHORT T1 hit: {sig['symbol']}")
 
         except Exception as e:
             logging.warning(f"Error checking {sig['symbol']}: {e}")
@@ -78,9 +108,10 @@ def build_daily_report(signals: list) -> str:
         "التفاصيل:",
     ]
     for s in signals:
-        icon = "✅" if s["result"] == "WIN" else "❌"
-        num  = s.get("signal_number", "?")
-        lines.append(f"#{num:03d} {icon} {s['symbol']} → {s['profit_pct']:+.2f}%")
+        icon      = "✅" if s["result"] == "WIN" else "❌"
+        num       = s.get("signal_number", "?")
+        direction = s.get("direction", "LONG")
+        lines.append(f"#{num:03d} {icon} {s['symbol']} {direction} → {s['profit_pct']:+.2f}%")
 
     return "\n".join(lines)
 
@@ -97,6 +128,11 @@ def build_weekly_report(signals: list) -> str:
     best         = max(signals, key=lambda x: x["profit_pct"])
     worst        = min(signals, key=lambda x: x["profit_pct"])
 
+    long_signals  = [s for s in signals if s.get("direction") == "LONG"]
+    short_signals = [s for s in signals if s.get("direction") == "SHORT"]
+    long_wins     = len([s for s in long_signals if s["result"] == "WIN"])
+    short_wins    = len([s for s in short_signals if s["result"] == "WIN"])
+
     lines = [
         f"📊 التقرير الأسبوعي",
         f"",
@@ -104,8 +140,12 @@ def build_weekly_report(signals: list) -> str:
         f"✅ رابح: {wins} ({winrate}%)",
         f"❌ خاسر: {losses}",
         f"💰 صافي الربح: {total_profit:+.2f}%",
-        f"🏆 أفضل صفقة: #{best.get('signal_number','?'):03d} {best['symbol']} ({best['profit_pct']:+.2f}%)",
-        f"💀 أسوأ صفقة: #{worst.get('signal_number','?'):03d} {worst['symbol']} ({worst['profit_pct']:+.2f}%)",
+        f"",
+        f"🟢 LONG: {len(long_signals)} إشارة | رابح: {long_wins}",
+        f"🔴 SHORT: {len(short_signals)} إشارة | رابح: {short_wins}",
+        f"",
+        f"🏆 أفضل: #{best.get('signal_number','?'):03d} {best['symbol']} ({best['profit_pct']:+.2f}%)",
+        f"💀 أسوأ: #{worst.get('signal_number','?'):03d} {worst['symbol']} ({worst['profit_pct']:+.2f}%)",
     ]
     return "\n".join(lines)
 
