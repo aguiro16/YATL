@@ -15,33 +15,91 @@ def build_analysis_prompt(signals: list) -> str:
     winrate  = round(wins / total * 100, 1) if total > 0 else 0
     avg_profit = round(sum(s["profit_pct"] for s in winning) / wins, 2) if wins > 0 else 0
     avg_loss   = round(sum(s["profit_pct"] for s in losing) / losses, 2) if losses > 0 else 0
-    losing_symbols = [s["symbol"] for s in losing]
+
+    # تفاصيل الإشارات الخاسرة
+    losing_details = ""
+    for s in losing:
+        try:
+            sent_at  = __import__('datetime').datetime.fromisoformat(s["sent_at"])
+            closed_at = __import__('datetime').datetime.fromisoformat(s["closed_at"])
+            hours = int((closed_at - sent_at).total_seconds() // 3600)
+        except Exception:
+            hours = "؟"
+
+        losing_details += (
+            f"\n❌ {s['symbol']}\n"
+            f"   - قوة القناة: {s.get('channel_strength', '؟')}%\n"
+            f"   - RR: {s.get('rr', '؟')}\n"
+            f"   - سعر الدخول: {s.get('entry_price', '؟')}\n"
+            f"   - Stop عند: {s.get('stop', '؟')}\n"
+            f"   - خسارة: {s.get('profit_pct', '؟')}%\n"
+            f"   - مدة الصفقة: {hours} ساعة\n"
+        )
+
+    # تفاصيل الإشارات الرابحة
+    winning_details = ""
+    for s in winning:
+        try:
+            sent_at   = __import__('datetime').datetime.fromisoformat(s["sent_at"])
+            closed_at = __import__('datetime').datetime.fromisoformat(s["closed_at"])
+            hours = int((closed_at - sent_at).total_seconds() // 3600)
+        except Exception:
+            hours = "؟"
+
+        winning_details += (
+            f"\n✅ {s['symbol']}\n"
+            f"   - قوة القناة: {s.get('channel_strength', '؟')}%\n"
+            f"   - RR: {s.get('rr', '؟')}\n"
+            f"   - سعر الدخول: {s.get('entry_price', '؟')}\n"
+            f"   - T1 عند: {s.get('t1', '؟')}\n"
+            f"   - ربح: {s.get('profit_pct', '؟')}%\n"
+            f"   - مدة الصفقة: {hours} ساعة\n"
+        )
 
     return f"""
-أنت محلل تداول خبير. لديك نتائج بوت إشارات على Binance Futures خلال الأسبوع الماضي:
+أنت محلل تداول خبير ومتخصص في استراتيجيات SMC والقنوات السعرية.
+لديك نتائج بوت إشارات على Binance Futures خلال الأسبوع الماضي.
 
-📊 الإحصائيات:
+━━━━━━━━━━━━━━━━━━━
+📊 الإحصائيات العامة:
+━━━━━━━━━━━━━━━━━━━
 - إجمالي الإشارات: {total}
 - إشارات رابحة: {wins} ({winrate}%)
 - إشارات خاسرة: {losses}
 - متوسط الربح: {avg_profit}%
 - متوسط الخسارة: {avg_loss}%
-- الأزواج الخاسرة: {', '.join(losing_symbols) if losing_symbols else 'لا يوجد'}
 
-الاستراتيجية المستخدمة:
-- كشف القناة الهابطة على 4H (R² > 55%)
-- مناطق الدعم والمقاومة التاريخية على 1D
-- 5 أهداف من المستويات التاريخية فوق الدخول
+━━━━━━━━━━━━━━━━━━━
+❌ تفاصيل الإشارات الخاسرة:
+━━━━━━━━━━━━━━━━━━━
+{losing_details if losing_details else "لا يوجد"}
+
+━━━━━━━━━━━━━━━━━━━
+✅ تفاصيل الإشارات الرابحة:
+━━━━━━━━━━━━━━━━━━━
+{winning_details if winning_details else "لا يوجد"}
+
+━━━━━━━━━━━━━━━━━━━
+⚙️ معاملات الاستراتيجية الحالية:
+━━━━━━━━━━━━━━━━━━━
+- كشف القناة الهابطة على 4H
+- الحد الأدنى لقوة القناة: 55%
+- السعر يجب أن يكون قرب قاع القناة (±5%)
+- مناطق الدعم والمقاومة من الإطار اليومي 1D
+- 5 أهداف من المستويات التاريخية
 - Stop = الدعم التالي تحت Buy Zone
-- شرط RR ≥ 1.2
+- الحد الأدنى للـ RR: 1.2
 
+━━━━━━━━━━━━━━━━━━━
 المطلوب:
-1. تحليل سبب الخسائر بناءً على البيانات
-2. اقتراح 3 تحسينات محددة وقابلة للتطبيق على الكود
-3. هل يجب رفع حد RR أو تغيير شروط الدخول؟
-4. خلاصة سريعة
+━━━━━━━━━━━━━━━━━━━
+1. هل هناك نمط مشترك بين الإشارات الخاسرة؟
+   (قوة قناة منخفضة؟ RR منخفض؟ مدة قصيرة؟)
+2. هل هناك نمط مشترك بين الإشارات الرابحة؟
+3. اقتراح 3 تعديلات محددة على معاملات الاستراتيجية مع القيم الجديدة المقترحة
+4. خلاصة سريعة بجملتين
 
-اكتب بالعربية وكن محدداً وعملياً.
+اكتب بالعربية وكن محدداً بالأرقام والقيم.
 """.strip()
 
 
@@ -59,7 +117,7 @@ async def analyze_with_ai(signals: list) -> str:
     }
     body = {
         "model": "claude-sonnet-4-20250514",
-        "max_tokens": 1000,
+        "max_tokens": 1500,
         "messages": [{"role": "user", "content": prompt}]
     }
     try:
