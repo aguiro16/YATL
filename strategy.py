@@ -173,8 +173,7 @@ def analyze_pair(df_4h: pd.DataFrame, df_1d: pd.DataFrame, symbol: str) -> dict 
     lookback = 30
     x_now    = lookback - 1
 
-    # ══════════ LONG ══════════
-    # السعر قرب قاع القناة الهابطة ±5%
+    # ══════════ LONG — قرب القاع ══════════
     channel_down = detect_descending_channel(highs_4h, lows_4h, lookback)
     if channel_down["is_channel"]:
         channel_bottom = channel_down["lower_slope"] * x_now + channel_down["low_intercept"]
@@ -193,6 +192,7 @@ def analyze_pair(df_4h: pd.DataFrame, df_1d: pd.DataFrame, symbol: str) -> dict 
                         return {
                             "symbol":           symbol,
                             "direction":        "LONG",
+                            "signal_type":      "BOTTOM",
                             "current_price":    current_price,
                             "buy_zone":         (buy_low, buy_high),
                             "stop":             stop,
@@ -201,8 +201,45 @@ def analyze_pair(df_4h: pd.DataFrame, df_1d: pd.DataFrame, symbol: str) -> dict 
                             "channel_strength": round(channel_down["channel_strength"] * 100, 1),
                         }
 
-    # ══════════ SHORT ══════════
-    # السعر قرب قمة القناة الصاعدة ±5%
+    # ══════════ LONG BREAKOUT — كسر القناة الهابطة لأعلى ══════════
+    # نستخدم lookback أكبر لاكتشاف قنوات أطول مدة
+    channel_down_long = detect_descending_channel(highs_4h, lows_4h, lookback)
+    if channel_down_long["is_channel"]:
+        x_prev = lookback - 2
+        channel_top_now  = channel_down_long["upper_slope"] * x_now  + channel_down_long["high_intercept"]
+        channel_top_prev = channel_down_long["upper_slope"] * x_prev + channel_down_long["high_intercept"]
+
+        last_close = closes_4h[-1]
+        prev_close = closes_4h[-2]
+
+        # الكسر: الإغلاق الأخير فوق الخط العلوي والإغلاق السابق تحته
+        breakout  = last_close > channel_top_now and prev_close <= channel_top_prev
+        break_pct = (last_close - channel_top_now) / channel_top_now if channel_top_now > 0 else 0
+
+        if breakout and break_pct > 0.005:
+            buy_low, buy_high = get_buy_zone(current_price, key_levels)
+            if buy_low:
+                stop    = get_stop_loss_long(buy_low, key_levels)
+                targets = get_targets_long(buy_high, key_levels)
+                if len(targets) >= 3:
+                    entry_mid = round((buy_low + buy_high) / 2, 8)
+                    risk      = entry_mid - stop
+                    reward    = targets.get("T1", entry_mid) - entry_mid
+                    rr        = round(reward / risk, 2) if risk > 0 else 0
+                    if rr >= 1.2:
+                        return {
+                            "symbol":           symbol,
+                            "direction":        "LONG",
+                            "signal_type":      "BREAKOUT",
+                            "current_price":    current_price,
+                            "buy_zone":         (buy_low, buy_high),
+                            "stop":             stop,
+                            "targets":          targets,
+                            "rr":               rr,
+                            "channel_strength": round(channel_down_long["channel_strength"] * 100, 1),
+                        }
+
+    # ══════════ SHORT — قرب القمة ══════════
     channel_up = detect_ascending_channel(highs_4h, lows_4h, lookback)
     if channel_up["is_channel"]:
         channel_top = channel_up["upper_slope"] * x_now + channel_up["high_intercept"]
@@ -221,6 +258,7 @@ def analyze_pair(df_4h: pd.DataFrame, df_1d: pd.DataFrame, symbol: str) -> dict 
                         return {
                             "symbol":           symbol,
                             "direction":        "SHORT",
+                            "signal_type":      "TOP",
                             "current_price":    current_price,
                             "buy_zone":         (sell_low, sell_high),
                             "stop":             stop,
