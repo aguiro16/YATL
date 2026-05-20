@@ -7,16 +7,21 @@ TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "400815773")
 
 
 def format_signal(signal: dict) -> str:
-    symbol    = signal["symbol"].replace("USDT", "")
+    symbol      = signal["symbol"].replace("USDT", "")
     buy_low, buy_high = signal["buy_zone"]
-    targets   = signal["targets"]
-    stop      = signal["stop"]
-    rr        = signal["rr"]
-    strength  = signal["channel_strength"]
-    number    = signal.get("signal_number", "?")
-    direction = signal.get("direction", "LONG")
+    targets     = signal["targets"]
+    stop        = signal["stop"]
+    rr          = signal["rr"]
+    strength    = signal["channel_strength"]
+    number      = signal.get("signal_number", "?")
+    direction   = signal.get("direction", "LONG")
+    signal_type = signal.get("signal_type", "BOTTOM")
 
-    if direction == "LONG":
+    if direction == "LONG" and signal_type == "BREAKOUT":
+        icon        = "🚀 🟢 LONG BREAKOUT"
+        entry_label = "🔱 Buy"
+        stop_label  = "🔴 STOP: اغلاق 4H أقل من"
+    elif direction == "LONG":
         icon        = "✅ 🟢 LONG"
         entry_label = "🔱 Buy"
         stop_label  = "🔴 STOP: اغلاق 4H أقل من"
@@ -65,5 +70,5 @@ async def send_telegram(session: aiohttp.ClientSession, message: str) -> bool:
 
 
 async def send_startup_message(session: aiohttp.ClientSession):
-    msg = "🤖 <b>F35 Signal Bot</b> started!\n📡 Scanning Long & Short on Binance Futures..."
+    msg = "🤖 <b>F35 Signal Bot</b> started!\n📡 Scanning Long / Breakout / Short..."
     await send_telegram(session, msg)
