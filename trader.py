@@ -63,7 +63,7 @@ def open_long(client: Client, symbol: str, stop: float, t1: float) -> bool:
         client.futures_create_order(
             symbol=symbol,
             side=SIDE_SELL,
-            type=FUTURE_ORDER_TYPE_STOP_MARKET,
+            type="STOP_MARKET",
             stopPrice=round(stop, 8),
             closePosition=True,
             positionSide="LONG",
@@ -74,7 +74,7 @@ def open_long(client: Client, symbol: str, stop: float, t1: float) -> bool:
         client.futures_create_order(
             symbol=symbol,
             side=SIDE_SELL,
-            type=FUTURE_ORDER_TYPE_TAKE_PROFIT_MARKET,
+            type="TAKE_PROFIT_MARKET",
             stopPrice=round(t1, 8),
             closePosition=True,
             positionSide="LONG",
@@ -110,7 +110,7 @@ def open_short(client: Client, symbol: str, stop: float, t1: float) -> bool:
         client.futures_create_order(
             symbol=symbol,
             side=SIDE_BUY,
-            type=FUTURE_ORDER_TYPE_STOP_MARKET,
+            type="STOP_MARKET",
             stopPrice=round(stop, 8),
             closePosition=True,
             positionSide="SHORT",
@@ -121,7 +121,7 @@ def open_short(client: Client, symbol: str, stop: float, t1: float) -> bool:
         client.futures_create_order(
             symbol=symbol,
             side=SIDE_BUY,
-            type=FUTURE_ORDER_TYPE_TAKE_PROFIT_MARKET,
+            type="TAKE_PROFIT_MARKET",
             stopPrice=round(t1, 8),
             closePosition=True,
             positionSide="SHORT",
