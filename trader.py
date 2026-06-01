@@ -66,8 +66,7 @@ def open_long(client: Client, symbol: str, stop: float, t1: float) -> bool:
             type="STOP_MARKET",
             stopPrice=round(stop, 8),
             closePosition=True,
-            positionSide="LONG",
-            timeInForce="GTE_GTC"
+            positionSide="LONG"
         )
 
         # Take Profit عند T1
@@ -77,8 +76,7 @@ def open_long(client: Client, symbol: str, stop: float, t1: float) -> bool:
             type="TAKE_PROFIT_MARKET",
             stopPrice=round(t1, 8),
             closePosition=True,
-            positionSide="LONG",
-            timeInForce="GTE_GTC"
+            positionSide="LONG"
         )
 
         logging.info(f"📌 SL={stop} | TP={t1} set for {symbol}")
@@ -113,8 +111,7 @@ def open_short(client: Client, symbol: str, stop: float, t1: float) -> bool:
             type="STOP_MARKET",
             stopPrice=round(stop, 8),
             closePosition=True,
-            positionSide="SHORT",
-            timeInForce="GTE_GTC"
+            positionSide="SHORT"
         )
 
         # Take Profit عند T1
@@ -124,8 +121,7 @@ def open_short(client: Client, symbol: str, stop: float, t1: float) -> bool:
             type="TAKE_PROFIT_MARKET",
             stopPrice=round(t1, 8),
             closePosition=True,
-            positionSide="SHORT",
-            timeInForce="GTE_GTC"
+            positionSide="SHORT"
         )
 
         logging.info(f"📌 SL={stop} | TP={t1} set for {symbol}")
