@@ -5,6 +5,7 @@ from fetcher import get_top_futures_pairs, get_klines
 from strategy import analyze_pair
 from telegram_sender import send_telegram, send_startup_message, format_signal
 from database import save_signal, is_signal_sent_recently, get_next_signal_number
+from trader import execute_signal
 
 SCAN_INTERVAL_SECONDS = 4 * 60 * 60
 MAX_PAIRS_PER_SCAN = 80
@@ -35,8 +36,9 @@ async def scan_once(session: aiohttp.ClientSession):
                 success = await send_telegram(session, message)
                 if success:
                     save_signal(result)
+                    execute_signal(result)
                     signals_found += 1
-                    logging.info(f"📡 Signal #{signal_number} sent: {symbol}")
+                    logging.info(f"📡 Signal #{signal_number} sent & executed: {symbol}")
                     await asyncio.sleep(2)
 
         except Exception as e:
