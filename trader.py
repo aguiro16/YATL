@@ -1,4 +1,3 @@
-import asyncio
 import logging
 import os
 from binance.client import Client
@@ -22,12 +21,9 @@ def set_leverage(client: Client, symbol: str):
 
 
 def get_quantity(client: Client, symbol: str, usdt_amount: float) -> float:
-    """
-    يحسب الكمية بناءً على المبلغ بالـ USDT والسعر الحالي.
-    """
     try:
-        price = float(client.futures_symbol_ticker(symbol=symbol)["price"])
-        info  = client.futures_exchange_info()
+        price     = float(client.futures_symbol_ticker(symbol=symbol)["price"])
+        info      = client.futures_exchange_info()
         step_size = 0.001
 
         for s in info["symbols"]:
@@ -37,11 +33,9 @@ def get_quantity(client: Client, symbol: str, usdt_amount: float) -> float:
                         step_size = float(f["stepSize"])
                         break
 
-        qty = usdt_amount / price
-
-        # تقريب للـ step size
+        qty       = usdt_amount / price
         precision = len(str(step_size).rstrip("0").split(".")[-1])
-        qty = round(qty - (qty % step_size), precision)
+        qty       = round(qty - (qty % step_size), precision)
         return qty
     except Exception as e:
         logging.error(f"Error calculating quantity {symbol}: {e}")
@@ -49,9 +43,6 @@ def get_quantity(client: Client, symbol: str, usdt_amount: float) -> float:
 
 
 def open_long(client: Client, symbol: str, stop: float, t1: float) -> bool:
-    """
-    يفتح صفقة LONG مع Stop Loss و Take Profit عند T1.
-    """
     try:
         set_leverage(client, symbol)
         qty = get_quantity(client, symbol, TRADE_AMOUNT_USDT)
@@ -63,7 +54,8 @@ def open_long(client: Client, symbol: str, stop: float, t1: float) -> bool:
             symbol=symbol,
             side=SIDE_BUY,
             type=ORDER_TYPE_MARKET,
-            quantity=qty
+            quantity=qty,
+            positionSide="LONG"
         )
         logging.info(f"✅ LONG opened: {symbol} qty={qty}")
 
@@ -74,6 +66,7 @@ def open_long(client: Client, symbol: str, stop: float, t1: float) -> bool:
             type=FUTURE_ORDER_TYPE_STOP_MARKET,
             stopPrice=round(stop, 8),
             closePosition=True,
+            positionSide="LONG",
             timeInForce="GTE_GTC"
         )
 
@@ -84,6 +77,7 @@ def open_long(client: Client, symbol: str, stop: float, t1: float) -> bool:
             type=FUTURE_ORDER_TYPE_TAKE_PROFIT_MARKET,
             stopPrice=round(t1, 8),
             closePosition=True,
+            positionSide="LONG",
             timeInForce="GTE_GTC"
         )
 
@@ -96,9 +90,6 @@ def open_long(client: Client, symbol: str, stop: float, t1: float) -> bool:
 
 
 def open_short(client: Client, symbol: str, stop: float, t1: float) -> bool:
-    """
-    يفتح صفقة SHORT مع Stop Loss و Take Profit عند T1.
-    """
     try:
         set_leverage(client, symbol)
         qty = get_quantity(client, symbol, TRADE_AMOUNT_USDT)
@@ -110,7 +101,8 @@ def open_short(client: Client, symbol: str, stop: float, t1: float) -> bool:
             symbol=symbol,
             side=SIDE_SELL,
             type=ORDER_TYPE_MARKET,
-            quantity=qty
+            quantity=qty,
+            positionSide="SHORT"
         )
         logging.info(f"✅ SHORT opened: {symbol} qty={qty}")
 
@@ -121,6 +113,7 @@ def open_short(client: Client, symbol: str, stop: float, t1: float) -> bool:
             type=FUTURE_ORDER_TYPE_STOP_MARKET,
             stopPrice=round(stop, 8),
             closePosition=True,
+            positionSide="SHORT",
             timeInForce="GTE_GTC"
         )
 
@@ -131,6 +124,7 @@ def open_short(client: Client, symbol: str, stop: float, t1: float) -> bool:
             type=FUTURE_ORDER_TYPE_TAKE_PROFIT_MARKET,
             stopPrice=round(t1, 8),
             closePosition=True,
+            positionSide="SHORT",
             timeInForce="GTE_GTC"
         )
 
@@ -143,9 +137,6 @@ def open_short(client: Client, symbol: str, stop: float, t1: float) -> bool:
 
 
 def execute_signal(signal: dict) -> bool:
-    """
-    الدالة الرئيسية — تستقبل الإشارة وتنفذها على Binance Futures.
-    """
     if not BINANCE_API_KEY or not BINANCE_API_SECRET:
         logging.error("BINANCE_API_KEY or BINANCE_API_SECRET not set!")
         return False
