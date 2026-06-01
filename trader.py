@@ -53,7 +53,7 @@ def open_long(client: Client, symbol: str, stop: float, t1: float) -> bool:
         client.futures_create_order(
             symbol=symbol,
             side=SIDE_BUY,
-            type=ORDER_TYPE_MARKET,
+            type="MARKET",
             quantity=qty,
             positionSide="LONG"
         )
@@ -100,7 +100,7 @@ def open_short(client: Client, symbol: str, stop: float, t1: float) -> bool:
         client.futures_create_order(
             symbol=symbol,
             side=SIDE_SELL,
-            type=ORDER_TYPE_MARKET,
+            type="MARKET",
             quantity=qty,
             positionSide="SHORT"
         )
