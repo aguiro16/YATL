@@ -1,38 +1,50 @@
 import logging
 import os
-from binance.client import Client
-from binance.enums import *
+import time
+import hmac
+import hashlib
+import requests
 
 BINANCE_API_KEY    = os.getenv("BINANCE_API_KEY")
 BINANCE_API_SECRET = os.getenv("BINANCE_API_SECRET")
 TRADE_AMOUNT_USDT  = float(os.getenv("TRADE_AMOUNT_USDT", "100"))
-LEVERAGE           = 1
+BASE_URL           = "https://fapi.binance.com"
 
 
-def get_client() -> Client:
-    return Client(BINANCE_API_KEY, BINANCE_API_SECRET)
+def sign(params: dict) -> dict:
+    query = "&".join(f"{k}={v}" for k, v in params.items())
+    sig   = hmac.new(
+        BINANCE_API_SECRET.encode(),
+        query.encode(),
+        hashlib.sha256
+    ).hexdigest()
+    params["signature"] = sig
+    return params
 
 
-def set_leverage(client: Client, symbol: str):
+def headers() -> dict:
+    return {"X-MBX-APIKEY": BINANCE_API_KEY}
+
+
+def get_price(symbol: str) -> float:
+    r = requests.get(f"{BASE_URL}/fapi/v1/ticker/price", params={"symbol": symbol})
+    return float(r.json()["price"])
+
+
+def get_step_size(symbol: str) -> float:
+    r = requests.get(f"{BASE_URL}/fapi/v1/exchangeInfo")
+    for s in r.json()["symbols"]:
+        if s["symbol"] == symbol:
+            for f in s["filters"]:
+                if f["filterType"] == "LOT_SIZE":
+                    return float(f["stepSize"])
+    return 0.001
+
+
+def get_quantity(symbol: str, usdt_amount: float) -> float:
     try:
-        client.futures_change_leverage(symbol=symbol, leverage=LEVERAGE)
-    except Exception as e:
-        logging.warning(f"Leverage set error {symbol}: {e}")
-
-
-def get_quantity(client: Client, symbol: str, usdt_amount: float) -> float:
-    try:
-        price     = float(client.futures_symbol_ticker(symbol=symbol)["price"])
-        info      = client.futures_exchange_info()
-        step_size = 0.001
-
-        for s in info["symbols"]:
-            if s["symbol"] == symbol:
-                for f in s["filters"]:
-                    if f["filterType"] == "LOT_SIZE":
-                        step_size = float(f["stepSize"])
-                        break
-
+        price     = get_price(symbol)
+        step_size = get_step_size(symbol)
         qty       = usdt_amount / price
         precision = len(str(step_size).rstrip("0").split(".")[-1])
         qty       = round(qty - (qty % step_size), precision)
@@ -42,42 +54,70 @@ def get_quantity(client: Client, symbol: str, usdt_amount: float) -> float:
         return 0.0
 
 
-def open_long(client: Client, symbol: str, stop: float, t1: float) -> bool:
+def place_order(params: dict) -> dict:
+    params["timestamp"] = int(time.time() * 1000)
+    params = sign(params)
+    r = requests.post(
+        f"{BASE_URL}/fapi/v1/order",
+        headers=headers(),
+        params=params
+    )
+    return r.json()
+
+
+def set_leverage(symbol: str, leverage: int = 1):
+    params = {
+        "symbol":    symbol,
+        "leverage":  leverage,
+        "timestamp": int(time.time() * 1000)
+    }
+    params = sign(params)
+    requests.post(
+        f"{BASE_URL}/fapi/v1/leverage",
+        headers=headers(),
+        params=params
+    )
+
+
+def open_long(symbol: str, stop: float, t1: float) -> bool:
     try:
-        set_leverage(client, symbol)
-        qty = get_quantity(client, symbol, TRADE_AMOUNT_USDT)
+        set_leverage(symbol, 1)
+        qty = get_quantity(symbol, TRADE_AMOUNT_USDT)
         if qty <= 0:
             return False
 
         # أمر الشراء
-        client.futures_create_order(
-            symbol=symbol,
-            side=SIDE_BUY,
-            type="MARKET",
-            quantity=qty,
-            positionSide="LONG"
-        )
+        res = place_order({
+            "symbol":       symbol,
+            "side":         "BUY",
+            "type":         "MARKET",
+            "quantity":     qty,
+            "positionSide": "LONG"
+        })
+        if "orderId" not in res:
+            logging.error(f"LONG order failed: {res}")
+            return False
         logging.info(f"✅ LONG opened: {symbol} qty={qty}")
 
         # Stop Loss
-        client.futures_create_order(
-            symbol=symbol,
-            side=SIDE_SELL,
-            type="STOP_MARKET",
-            stopPrice=round(stop, 8),
-            closePosition=True,
-            positionSide="LONG"
-        )
+        place_order({
+            "symbol":        symbol,
+            "side":          "SELL",
+            "type":          "STOP_MARKET",
+            "stopPrice":     round(stop, 8),
+            "closePosition": "true",
+            "positionSide":  "LONG"
+        })
 
-        # Take Profit عند T1
-        client.futures_create_order(
-            symbol=symbol,
-            side=SIDE_SELL,
-            type="TAKE_PROFIT_MARKET",
-            stopPrice=round(t1, 8),
-            closePosition=True,
-            positionSide="LONG"
-        )
+        # Take Profit
+        place_order({
+            "symbol":        symbol,
+            "side":          "SELL",
+            "type":          "TAKE_PROFIT_MARKET",
+            "stopPrice":     round(t1, 8),
+            "closePosition": "true",
+            "positionSide":  "LONG"
+        })
 
         logging.info(f"📌 SL={stop} | TP={t1} set for {symbol}")
         return True
@@ -87,42 +127,45 @@ def open_long(client: Client, symbol: str, stop: float, t1: float) -> bool:
         return False
 
 
-def open_short(client: Client, symbol: str, stop: float, t1: float) -> bool:
+def open_short(symbol: str, stop: float, t1: float) -> bool:
     try:
-        set_leverage(client, symbol)
-        qty = get_quantity(client, symbol, TRADE_AMOUNT_USDT)
+        set_leverage(symbol, 1)
+        qty = get_quantity(symbol, TRADE_AMOUNT_USDT)
         if qty <= 0:
             return False
 
         # أمر البيع
-        client.futures_create_order(
-            symbol=symbol,
-            side=SIDE_SELL,
-            type="MARKET",
-            quantity=qty,
-            positionSide="SHORT"
-        )
+        res = place_order({
+            "symbol":       symbol,
+            "side":         "SELL",
+            "type":         "MARKET",
+            "quantity":     qty,
+            "positionSide": "SHORT"
+        })
+        if "orderId" not in res:
+            logging.error(f"SHORT order failed: {res}")
+            return False
         logging.info(f"✅ SHORT opened: {symbol} qty={qty}")
 
         # Stop Loss
-        client.futures_create_order(
-            symbol=symbol,
-            side=SIDE_BUY,
-            type="STOP_MARKET",
-            stopPrice=round(stop, 8),
-            closePosition=True,
-            positionSide="SHORT"
-        )
+        place_order({
+            "symbol":        symbol,
+            "side":          "BUY",
+            "type":          "STOP_MARKET",
+            "stopPrice":     round(stop, 8),
+            "closePosition": "true",
+            "positionSide":  "SHORT"
+        })
 
-        # Take Profit عند T1
-        client.futures_create_order(
-            symbol=symbol,
-            side=SIDE_BUY,
-            type="TAKE_PROFIT_MARKET",
-            stopPrice=round(t1, 8),
-            closePosition=True,
-            positionSide="SHORT"
-        )
+        # Take Profit
+        place_order({
+            "symbol":        symbol,
+            "side":          "BUY",
+            "type":          "TAKE_PROFIT_MARKET",
+            "stopPrice":     round(t1, 8),
+            "closePosition": "true",
+            "positionSide":  "SHORT"
+        })
 
         logging.info(f"📌 SL={stop} | TP={t1} set for {symbol}")
         return True
@@ -146,9 +189,7 @@ def execute_signal(signal: dict) -> bool:
         logging.error(f"No T1 for {symbol}")
         return False
 
-    client = get_client()
-
     if direction == "LONG":
-        return open_long(client, symbol, stop, t1)
+        return open_long(symbol, stop, t1)
     else:
-        return open_short(client, symbol, stop, t1)
+        return open_short(symbol, stop, t1)
