@@ -55,6 +55,7 @@ def get_quantity(symbol: str, usdt_amount: float) -> float:
 
 
 def place_order(params: dict) -> dict:
+    """أمر الشراء/البيع العادي"""
     params["timestamp"] = int(time.time() * 1000)
     params = sign(params)
     r = requests.post(
@@ -66,6 +67,22 @@ def place_order(params: dict) -> dict:
     if r.status_code != 200:
         logging.error(f"Order failed: {result}")
         raise Exception(f"Order failed: {result}")
+    return result
+
+
+def place_algo_order(params: dict) -> dict:
+    """أوامر SL و TP — تستخدم algo endpoint"""
+    params["timestamp"] = int(time.time() * 1000)
+    params = sign(params)
+    r = requests.post(
+        f"{BASE_URL}/fapi/v1/order/algo",
+        headers=headers(),
+        params=params
+    )
+    result = r.json()
+    if r.status_code != 200:
+        logging.error(f"Algo order failed: {result}")
+        raise Exception(f"Algo order failed: {result}")
     return result
 
 
@@ -91,7 +108,7 @@ def open_long(symbol: str, stop: float, t1: float) -> bool:
             return False
 
         # أمر الشراء
-        res = place_order({
+        place_order({
             "symbol":       symbol,
             "side":         "BUY",
             "type":         "MARKET",
@@ -101,7 +118,7 @@ def open_long(symbol: str, stop: float, t1: float) -> bool:
         logging.info(f"✅ LONG opened: {symbol} qty={qty}")
 
         # Stop Loss
-        place_order({
+        place_algo_order({
             "symbol":        symbol,
             "side":          "SELL",
             "type":          "STOP_MARKET",
@@ -111,7 +128,7 @@ def open_long(symbol: str, stop: float, t1: float) -> bool:
         })
 
         # Take Profit
-        place_order({
+        place_algo_order({
             "symbol":        symbol,
             "side":          "SELL",
             "type":          "TAKE_PROFIT_MARKET",
@@ -136,7 +153,7 @@ def open_short(symbol: str, stop: float, t1: float) -> bool:
             return False
 
         # أمر البيع
-        res = place_order({
+        place_order({
             "symbol":       symbol,
             "side":         "SELL",
             "type":         "MARKET",
@@ -146,7 +163,7 @@ def open_short(symbol: str, stop: float, t1: float) -> bool:
         logging.info(f"✅ SHORT opened: {symbol} qty={qty}")
 
         # Stop Loss
-        place_order({
+        place_algo_order({
             "symbol":        symbol,
             "side":          "BUY",
             "type":          "STOP_MARKET",
@@ -156,7 +173,7 @@ def open_short(symbol: str, stop: float, t1: float) -> bool:
         })
 
         # Take Profit
-        place_order({
+        place_algo_order({
             "symbol":        symbol,
             "side":          "BUY",
             "type":          "TAKE_PROFIT_MARKET",
