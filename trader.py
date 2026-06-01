@@ -62,7 +62,11 @@ def place_order(params: dict) -> dict:
         headers=headers(),
         params=params
     )
-    return r.json()
+    result = r.json()
+    if r.status_code != 200:
+        logging.error(f"Order failed: {result}")
+        raise Exception(f"Order failed: {result}")
+    return result
 
 
 def set_leverage(symbol: str, leverage: int = 1):
@@ -94,9 +98,6 @@ def open_long(symbol: str, stop: float, t1: float) -> bool:
             "quantity":     qty,
             "positionSide": "LONG"
         })
-        if "orderId" not in res:
-            logging.error(f"LONG order failed: {res}")
-            return False
         logging.info(f"✅ LONG opened: {symbol} qty={qty}")
 
         # Stop Loss
@@ -104,7 +105,7 @@ def open_long(symbol: str, stop: float, t1: float) -> bool:
             "symbol":        symbol,
             "side":          "SELL",
             "type":          "STOP_MARKET",
-            "stopPrice":     round(stop, 8),
+            "stopPrice":     round(stop, 4),
             "closePosition": "true",
             "positionSide":  "LONG"
         })
@@ -114,7 +115,7 @@ def open_long(symbol: str, stop: float, t1: float) -> bool:
             "symbol":        symbol,
             "side":          "SELL",
             "type":          "TAKE_PROFIT_MARKET",
-            "stopPrice":     round(t1, 8),
+            "stopPrice":     round(t1, 4),
             "closePosition": "true",
             "positionSide":  "LONG"
         })
@@ -142,9 +143,6 @@ def open_short(symbol: str, stop: float, t1: float) -> bool:
             "quantity":     qty,
             "positionSide": "SHORT"
         })
-        if "orderId" not in res:
-            logging.error(f"SHORT order failed: {res}")
-            return False
         logging.info(f"✅ SHORT opened: {symbol} qty={qty}")
 
         # Stop Loss
@@ -152,7 +150,7 @@ def open_short(symbol: str, stop: float, t1: float) -> bool:
             "symbol":        symbol,
             "side":          "BUY",
             "type":          "STOP_MARKET",
-            "stopPrice":     round(stop, 8),
+            "stopPrice":     round(stop, 4),
             "closePosition": "true",
             "positionSide":  "SHORT"
         })
@@ -162,7 +160,7 @@ def open_short(symbol: str, stop: float, t1: float) -> bool:
             "symbol":        symbol,
             "side":          "BUY",
             "type":          "TAKE_PROFIT_MARKET",
-            "stopPrice":     round(t1, 8),
+            "stopPrice":     round(t1, 4),
             "closePosition": "true",
             "positionSide":  "SHORT"
         })
