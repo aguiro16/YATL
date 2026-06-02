@@ -71,18 +71,19 @@ def place_order(params: dict) -> dict:
 
 
 def place_algo_order(params: dict) -> dict:
-    """أوامر SL و TP — تستخدم algo endpoint"""
-    params["timestamp"] = int(time.time() * 1000)
+    """أوامر SL و TP"""
+    params["timestamp"]   = int(time.time() * 1000)
+    params["workingType"] = "MARK_PRICE"
     params = sign(params)
     r = requests.post(
-        f"{BASE_URL}/fapi/v1/order/algo",
+        f"{BASE_URL}/fapi/v1/order",
         headers=headers(),
         params=params
     )
     result = r.json()
     if r.status_code != 200:
-        logging.error(f"Algo order failed: {result}")
-        raise Exception(f"Algo order failed: {result}")
+        logging.error(f"Order failed: {result}")
+        raise Exception(f"Order failed: {result}")
     return result
 
 
