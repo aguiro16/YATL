@@ -29,33 +29,6 @@ def detect_descending_channel(highs: list, lows: list, lookback: int = 30) -> di
     }
 
 
-def detect_ascending_channel(highs: list, lows: list, lookback: int = 30) -> dict:
-    if len(highs) < lookback or len(lows) < lookback:
-        return {"is_channel": False}
-
-    h = np.array(highs[-lookback:])
-    l = np.array(lows[-lookback:])
-    x = np.arange(lookback)
-
-    high_slope, high_intercept = np.polyfit(x, h, 1)
-    low_slope, low_intercept   = np.polyfit(x, l, 1)
-    is_ascending = high_slope > 0 and low_slope > 0
-
-    h_pred = high_slope * x + high_intercept
-    ss_res = np.sum((h - h_pred) ** 2)
-    ss_tot = np.sum((h - np.mean(h)) ** 2)
-    r2 = 1 - (ss_res / ss_tot) if ss_tot != 0 else 0
-
-    return {
-        "is_channel": is_ascending and r2 > 0.55,
-        "upper_slope": high_slope,
-        "lower_slope": low_slope,
-        "high_intercept": high_intercept,
-        "low_intercept": low_intercept,
-        "channel_strength": r2,
-    }
-
-
 def find_key_levels(highs: list, lows: list, tolerance: float = 0.012) -> list:
     all_levels = []
     highs_arr  = np.array(highs)
@@ -121,6 +94,11 @@ def get_targets_long(buy_high: float, key_levels: list, n: int = 5) -> dict:
 # ───────────── SHORT ─────────────
 
 def get_sell_zone(current_price: float, key_levels: list) -> tuple:
+    """
+    منطقة الشورت = السعر قرب الخط العلوي للقناة الهابطة
+    Sell High = أقرب مقاومة فوق السعر
+    Sell Low  = السعر الحالي
+    """
     resistances = [l for l in key_levels if l >= current_price * 0.98]
     if not resistances:
         return None, None
@@ -130,6 +108,9 @@ def get_sell_zone(current_price: float, key_levels: list) -> tuple:
 
 
 def get_stop_loss_short(sell_high: float, key_levels: list) -> float:
+    """
+    Stop للشورت = أول مقاومة فوق منطقة البيع + هامش 0.5%
+    """
     resistances_above = [l for l in key_levels if l > sell_high * 1.005]
     if resistances_above:
         return round(min(resistances_above) * 1.005, 8)
@@ -137,6 +118,9 @@ def get_stop_loss_short(sell_high: float, key_levels: list) -> float:
 
 
 def get_targets_short(sell_low: float, key_levels: list, n: int = 5) -> dict:
+    """
+    أهداف الشورت = أقرب 5 دعوم تاريخية تحت منطقة البيع
+    """
     supports = sorted([l for l in key_levels if l < sell_low], reverse=True)
     targets = {}
     for i in range(min(n, len(supports))):
@@ -173,98 +157,99 @@ def analyze_pair(df_4h: pd.DataFrame, df_1d: pd.DataFrame, symbol: str) -> dict 
     lookback = 30
     x_now    = lookback - 1
 
-    # ══════════ LONG — قرب القاع ══════════
+    # نكتشف القناة الهابطة مرة واحدة فقط
     channel_down = detect_descending_channel(highs_4h, lows_4h, lookback)
-    if channel_down["is_channel"]:
-        channel_bottom = channel_down["lower_slope"] * x_now + channel_down["low_intercept"]
-        dist = abs(current_price - channel_bottom) / channel_bottom
-        if dist <= 0.05:
-            buy_low, buy_high = get_buy_zone(current_price, key_levels)
-            if buy_low:
-                stop    = get_stop_loss_long(buy_low, key_levels)
-                targets = get_targets_long(buy_high, key_levels)
-                if len(targets) >= 3:
-                    entry_mid = round((buy_low + buy_high) / 2, 8)
-                    risk      = entry_mid - stop
-                    reward    = targets.get("T1", entry_mid) - entry_mid
-                    rr        = round(reward / risk, 2) if risk > 0 else 0
-                    if rr >= 1.2:
-                        return {
-                            "symbol":           symbol,
-                            "direction":        "LONG",
-                            "signal_type":      "BOTTOM",
-                            "current_price":    current_price,
-                            "buy_zone":         (buy_low, buy_high),
-                            "stop":             stop,
-                            "targets":          targets,
-                            "rr":               rr,
-                            "channel_strength": round(channel_down["channel_strength"] * 100, 1),
-                        }
 
-    # ══════════ LONG BREAKOUT — كسر القناة الهابطة لأعلى ══════════
-    # نستخدم lookback أكبر لاكتشاف قنوات أطول مدة
-    channel_down_long = detect_descending_channel(highs_4h, lows_4h, lookback)
-    if channel_down_long["is_channel"]:
-        x_prev = lookback - 2
-        channel_top_now  = channel_down_long["upper_slope"] * x_now  + channel_down_long["high_intercept"]
-        channel_top_prev = channel_down_long["upper_slope"] * x_prev + channel_down_long["high_intercept"]
+    if not channel_down["is_channel"]:
+        return None
 
-        last_close = closes_4h[-1]
-        prev_close = closes_4h[-2]
+    channel_bottom = channel_down["lower_slope"] * x_now + channel_down["low_intercept"]
+    channel_top    = channel_down["upper_slope"] * x_now + channel_down["high_intercept"]
 
-        # الكسر: الإغلاق الأخير فوق الخط العلوي والإغلاق السابق تحته
-        breakout  = last_close > channel_top_now and prev_close <= channel_top_prev
-        break_pct = (last_close - channel_top_now) / channel_top_now if channel_top_now > 0 else 0
+    dist_to_bottom = abs(current_price - channel_bottom) / channel_bottom
+    dist_to_top    = abs(current_price - channel_top) / channel_top
 
-        if breakout and break_pct > 0.005:
-            buy_low, buy_high = get_buy_zone(current_price, key_levels)
-            if buy_low:
-                stop    = get_stop_loss_long(buy_low, key_levels)
-                targets = get_targets_long(buy_high, key_levels)
-                if len(targets) >= 3:
-                    entry_mid = round((buy_low + buy_high) / 2, 8)
-                    risk      = entry_mid - stop
-                    reward    = targets.get("T1", entry_mid) - entry_mid
-                    rr        = round(reward / risk, 2) if risk > 0 else 0
-                    if rr >= 1.2:
-                        return {
-                            "symbol":           symbol,
-                            "direction":        "LONG",
-                            "signal_type":      "BREAKOUT",
-                            "current_price":    current_price,
-                            "buy_zone":         (buy_low, buy_high),
-                            "stop":             stop,
-                            "targets":          targets,
-                            "rr":               rr,
-                            "channel_strength": round(channel_down_long["channel_strength"] * 100, 1),
-                        }
+    # ══════════ LONG — قرب قاع القناة الهابطة ±5% ══════════
+    if dist_to_bottom <= 0.05:
+        buy_low, buy_high = get_buy_zone(current_price, key_levels)
+        if buy_low:
+            stop    = get_stop_loss_long(buy_low, key_levels)
+            targets = get_targets_long(buy_high, key_levels)
+            if len(targets) >= 3:
+                entry_mid = round((buy_low + buy_high) / 2, 8)
+                risk      = entry_mid - stop
+                reward    = targets.get("T1", entry_mid) - entry_mid
+                rr        = round(reward / risk, 2) if risk > 0 else 0
+                if rr >= 1.2:
+                    return {
+                        "symbol":           symbol,
+                        "direction":        "LONG",
+                        "signal_type":      "BOTTOM",
+                        "current_price":    current_price,
+                        "buy_zone":         (buy_low, buy_high),
+                        "stop":             stop,
+                        "targets":          targets,
+                        "rr":               rr,
+                        "channel_strength": round(channel_down["channel_strength"] * 100, 1),
+                    }
 
-    # ══════════ SHORT — قرب القمة ══════════
-    channel_up = detect_ascending_channel(highs_4h, lows_4h, lookback)
-    if channel_up["is_channel"]:
-        channel_top = channel_up["upper_slope"] * x_now + channel_up["high_intercept"]
-        dist = abs(current_price - channel_top) / channel_top
-        if dist <= 0.05:
-            sell_low, sell_high = get_sell_zone(current_price, key_levels)
-            if sell_low:
-                stop    = get_stop_loss_short(sell_high, key_levels)
-                targets = get_targets_short(sell_low, key_levels)
-                if len(targets) >= 3:
-                    entry_mid = round((sell_low + sell_high) / 2, 8)
-                    risk      = stop - entry_mid
-                    reward    = entry_mid - targets.get("T1", entry_mid)
-                    rr        = round(reward / risk, 2) if risk > 0 else 0
-                    if rr >= 1.2:
-                        return {
-                            "symbol":           symbol,
-                            "direction":        "SHORT",
-                            "signal_type":      "TOP",
-                            "current_price":    current_price,
-                            "buy_zone":         (sell_low, sell_high),
-                            "stop":             stop,
-                            "targets":          targets,
-                            "rr":               rr,
-                            "channel_strength": round(channel_up["channel_strength"] * 100, 1),
-                        }
+    # ══════════ LONG BREAKOUT — كسر الخط العلوي للقناة لأعلى ══════════
+    x_prev = lookback - 2
+    channel_top_now  = channel_down["upper_slope"] * x_now  + channel_down["high_intercept"]
+    channel_top_prev = channel_down["upper_slope"] * x_prev + channel_down["high_intercept"]
+
+    last_close = closes_4h[-1]
+    prev_close = closes_4h[-2]
+
+    breakout  = last_close > channel_top_now and prev_close <= channel_top_prev
+    break_pct = (last_close - channel_top_now) / channel_top_now if channel_top_now > 0 else 0
+
+    if breakout and break_pct > 0.005:
+        buy_low, buy_high = get_buy_zone(current_price, key_levels)
+        if buy_low:
+            stop    = get_stop_loss_long(buy_low, key_levels)
+            targets = get_targets_long(buy_high, key_levels)
+            if len(targets) >= 3:
+                entry_mid = round((buy_low + buy_high) / 2, 8)
+                risk      = entry_mid - stop
+                reward    = targets.get("T1", entry_mid) - entry_mid
+                rr        = round(reward / risk, 2) if risk > 0 else 0
+                if rr >= 1.2:
+                    return {
+                        "symbol":           symbol,
+                        "direction":        "LONG",
+                        "signal_type":      "BREAKOUT",
+                        "current_price":    current_price,
+                        "buy_zone":         (buy_low, buy_high),
+                        "stop":             stop,
+                        "targets":          targets,
+                        "rr":               rr,
+                        "channel_strength": round(channel_down["channel_strength"] * 100, 1),
+                    }
+
+    # ══════════ SHORT — قرب قمة القناة الهابطة ±5% ══════════
+    # نفس القناة الهابطة — ندخل SHORT عند الارتداد للخط العلوي
+    if dist_to_top <= 0.05:
+        sell_low, sell_high = get_sell_zone(current_price, key_levels)
+        if sell_low:
+            stop    = get_stop_loss_short(sell_high, key_levels)
+            targets = get_targets_short(sell_low, key_levels)
+            if len(targets) >= 3:
+                entry_mid = round((sell_low + sell_high) / 2, 8)
+                risk      = stop - entry_mid
+                reward    = entry_mid - targets.get("T1", entry_mid)
+                rr        = round(reward / risk, 2) if risk > 0 else 0
+                if rr >= 1.2:
+                    return {
+                        "symbol":           symbol,
+                        "direction":        "SHORT",
+                        "signal_type":      "TOP",
+                        "current_price":    current_price,
+                        "buy_zone":         (sell_low, sell_high),
+                        "stop":             stop,
+                        "targets":          targets,
+                        "rr":               rr,
+                        "channel_strength": round(channel_down["channel_strength"] * 100, 1),
+                    }
 
     return None
