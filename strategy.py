@@ -61,6 +61,35 @@ def find_key_levels(highs: list, lows: list, tolerance: float = 0.012) -> list:
     return merged
 
 
+def get_market_bias(closes_1d: list) -> str:
+    """
+    يحدد اتجاه السوق العام بناءً على EMA200 على الإطار اليومي.
+    - BEARISH: السعر تحت EMA200 → يسمح فقط بـ SHORT
+    - BULLISH: السعر فوق EMA200 → يسمح فقط بـ LONG
+    - NEUTRAL: السعر قريب من EMA200 (±3%) → يسمح بالاثنين
+    """
+    if len(closes_1d) < 200:
+        return "NEUTRAL"
+
+    closes = np.array(closes_1d)
+    ema200 = closes[-200:].mean()  # نستخدم SMA200 كتقريب
+    # حساب EMA200 الحقيقي
+    k = 2 / (200 + 1)
+    ema = closes[0]
+    for price in closes[1:]:
+        ema = price * k + ema * (1 - k)
+
+    current_price = closes[-1]
+    diff_pct = (current_price - ema) / ema
+
+    if diff_pct > 0.03:
+        return "BULLISH"
+    elif diff_pct < -0.03:
+        return "BEARISH"
+    else:
+        return "NEUTRAL"
+
+
 # ───────────── LONG ─────────────
 
 def get_buy_zone(current_price: float, key_levels: list) -> tuple:
@@ -94,11 +123,6 @@ def get_targets_long(buy_high: float, key_levels: list, n: int = 5) -> dict:
 # ───────────── SHORT ─────────────
 
 def get_sell_zone(current_price: float, key_levels: list) -> tuple:
-    """
-    منطقة الشورت = السعر قرب الخط العلوي للقناة الهابطة
-    Sell High = أقرب مقاومة فوق السعر
-    Sell Low  = السعر الحالي
-    """
     resistances = [l for l in key_levels if l >= current_price * 0.98]
     if not resistances:
         return None, None
@@ -108,9 +132,6 @@ def get_sell_zone(current_price: float, key_levels: list) -> tuple:
 
 
 def get_stop_loss_short(sell_high: float, key_levels: list) -> float:
-    """
-    Stop للشورت = أول مقاومة فوق منطقة البيع + هامش 0.5%
-    """
     resistances_above = [l for l in key_levels if l > sell_high * 1.005]
     if resistances_above:
         return round(min(resistances_above) * 1.005, 8)
@@ -118,9 +139,6 @@ def get_stop_loss_short(sell_high: float, key_levels: list) -> float:
 
 
 def get_targets_short(sell_low: float, key_levels: list, n: int = 5) -> dict:
-    """
-    أهداف الشورت = أقرب 5 دعوم تاريخية تحت منطقة البيع
-    """
     supports = sorted([l for l in key_levels if l < sell_low], reverse=True)
     targets = {}
     for i in range(min(n, len(supports))):
@@ -147,6 +165,7 @@ def analyze_pair(df_4h: pd.DataFrame, df_1d: pd.DataFrame, symbol: str) -> dict 
     closes_4h = df_4h["close"].tolist()
     highs_1d  = df_1d["high"].tolist()
     lows_1d   = df_1d["low"].tolist()
+    closes_1d = df_1d["close"].tolist()
 
     current_price = closes_4h[-1]
     key_levels    = find_key_levels(highs_1d, lows_1d, tolerance=0.012)
@@ -154,10 +173,12 @@ def analyze_pair(df_4h: pd.DataFrame, df_1d: pd.DataFrame, symbol: str) -> dict 
     if len(key_levels) < 3:
         return None
 
+    # ── فلتر اتجاه السوق العام ──
+    bias = get_market_bias(closes_1d)
+
     lookback = 30
     x_now    = lookback - 1
 
-    # نكتشف القناة الهابطة مرة واحدة فقط
     channel_down = detect_descending_channel(highs_4h, lows_4h, lookback)
 
     if not channel_down["is_channel"]:
@@ -169,8 +190,9 @@ def analyze_pair(df_4h: pd.DataFrame, df_1d: pd.DataFrame, symbol: str) -> dict 
     dist_to_bottom = abs(current_price - channel_bottom) / channel_bottom
     dist_to_top    = abs(current_price - channel_top) / channel_top
 
-    # ══════════ LONG — قرب قاع القناة الهابطة ±5% ══════════
-    if dist_to_bottom <= 0.05:
+    # ══════════ LONG — قاع القناة ══════════
+    # يُسمح فقط إذا السوق صاعد أو محايد
+    if bias in ("BULLISH", "NEUTRAL") and dist_to_bottom <= 0.05:
         buy_low, buy_high = get_buy_zone(current_price, key_levels)
         if buy_low:
             stop    = get_stop_loss_long(buy_low, key_levels)
@@ -191,45 +213,49 @@ def analyze_pair(df_4h: pd.DataFrame, df_1d: pd.DataFrame, symbol: str) -> dict 
                         "targets":          targets,
                         "rr":               rr,
                         "channel_strength": round(channel_down["channel_strength"] * 100, 1),
+                        "market_bias":      bias,
                     }
 
-    # ══════════ LONG BREAKOUT — كسر الخط العلوي للقناة لأعلى ══════════
-    x_prev = lookback - 2
-    channel_top_now  = channel_down["upper_slope"] * x_now  + channel_down["high_intercept"]
-    channel_top_prev = channel_down["upper_slope"] * x_prev + channel_down["high_intercept"]
+    # ══════════ LONG BREAKOUT ══════════
+    # يُسمح فقط إذا السوق صاعد أو محايد
+    if bias in ("BULLISH", "NEUTRAL"):
+        x_prev = lookback - 2
+        channel_top_now  = channel_down["upper_slope"] * x_now  + channel_down["high_intercept"]
+        channel_top_prev = channel_down["upper_slope"] * x_prev + channel_down["high_intercept"]
 
-    last_close = closes_4h[-1]
-    prev_close = closes_4h[-2]
+        last_close = closes_4h[-1]
+        prev_close = closes_4h[-2]
 
-    breakout  = last_close > channel_top_now and prev_close <= channel_top_prev
-    break_pct = (last_close - channel_top_now) / channel_top_now if channel_top_now > 0 else 0
+        breakout  = last_close > channel_top_now and prev_close <= channel_top_prev
+        break_pct = (last_close - channel_top_now) / channel_top_now if channel_top_now > 0 else 0
 
-    if breakout and break_pct > 0.005:
-        buy_low, buy_high = get_buy_zone(current_price, key_levels)
-        if buy_low:
-            stop    = get_stop_loss_long(buy_low, key_levels)
-            targets = get_targets_long(buy_high, key_levels)
-            if len(targets) >= 3:
-                entry_mid = round((buy_low + buy_high) / 2, 8)
-                risk      = entry_mid - stop
-                reward    = targets.get("T1", entry_mid) - entry_mid
-                rr        = round(reward / risk, 2) if risk > 0 else 0
-                if rr >= 1.2:
-                    return {
-                        "symbol":           symbol,
-                        "direction":        "LONG",
-                        "signal_type":      "BREAKOUT",
-                        "current_price":    current_price,
-                        "buy_zone":         (buy_low, buy_high),
-                        "stop":             stop,
-                        "targets":          targets,
-                        "rr":               rr,
-                        "channel_strength": round(channel_down["channel_strength"] * 100, 1),
-                    }
+        if breakout and break_pct > 0.005:
+            buy_low, buy_high = get_buy_zone(current_price, key_levels)
+            if buy_low:
+                stop    = get_stop_loss_long(buy_low, key_levels)
+                targets = get_targets_long(buy_high, key_levels)
+                if len(targets) >= 3:
+                    entry_mid = round((buy_low + buy_high) / 2, 8)
+                    risk      = entry_mid - stop
+                    reward    = targets.get("T1", entry_mid) - entry_mid
+                    rr        = round(reward / risk, 2) if risk > 0 else 0
+                    if rr >= 1.2:
+                        return {
+                            "symbol":           symbol,
+                            "direction":        "LONG",
+                            "signal_type":      "BREAKOUT",
+                            "current_price":    current_price,
+                            "buy_zone":         (buy_low, buy_high),
+                            "stop":             stop,
+                            "targets":          targets,
+                            "rr":               rr,
+                            "channel_strength": round(channel_down["channel_strength"] * 100, 1),
+                            "market_bias":      bias,
+                        }
 
-    # ══════════ SHORT — قرب قمة القناة الهابطة ±5% ══════════
-    # نفس القناة الهابطة — ندخل SHORT عند الارتداد للخط العلوي
-    if dist_to_top <= 0.05:
+    # ══════════ SHORT — قمة القناة الهابطة ══════════
+    # يُسمح فقط إذا السوق هابط أو محايد
+    if bias in ("BEARISH", "NEUTRAL") and dist_to_top <= 0.05:
         sell_low, sell_high = get_sell_zone(current_price, key_levels)
         if sell_low:
             stop    = get_stop_loss_short(sell_high, key_levels)
@@ -250,6 +276,7 @@ def analyze_pair(df_4h: pd.DataFrame, df_1d: pd.DataFrame, symbol: str) -> dict 
                         "targets":          targets,
                         "rr":               rr,
                         "channel_strength": round(channel_down["channel_strength"] * 100, 1),
+                        "market_bias":      bias,
                     }
 
     return None
