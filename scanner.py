@@ -24,7 +24,7 @@ async def scan_once(session: aiohttp.ClientSession):
 
             df_4h = await get_klines(session, symbol, "4h", limit=100)
             await asyncio.sleep(DELAY_BETWEEN_PAIRS)
-            df_1d = await get_klines(session, symbol, "1d", limit=100)
+            df_1d = await get_klines(session, symbol, "1d", limit=210)
             await asyncio.sleep(DELAY_BETWEEN_PAIRS)
 
             result = analyze_pair(df_4h, df_1d, symbol)
