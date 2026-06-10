@@ -20,7 +20,7 @@ def detect_descending_channel(highs: list, lows: list, lookback: int = 30) -> di
     r2 = 1 - (ss_res / ss_tot) if ss_tot != 0 else 0
 
     return {
-        "is_channel": is_descending and r2 > 0.55,
+        "is_channel": is_descending and r2 > 0.65,
         "upper_slope": high_slope,
         "lower_slope": low_slope,
         "high_intercept": high_intercept,
@@ -62,18 +62,10 @@ def find_key_levels(highs: list, lows: list, tolerance: float = 0.012) -> list:
 
 
 def get_market_bias(closes_1d: list) -> str:
-    """
-    يحدد اتجاه السوق العام بناءً على EMA200 على الإطار اليومي.
-    - BEARISH: السعر تحت EMA200 → يسمح فقط بـ SHORT
-    - BULLISH: السعر فوق EMA200 → يسمح فقط بـ LONG
-    - NEUTRAL: السعر قريب من EMA200 (±3%) → يسمح بالاثنين
-    """
     if len(closes_1d) < 200:
         return "NEUTRAL"
 
     closes = np.array(closes_1d)
-    ema200 = closes[-200:].mean()  # نستخدم SMA200 كتقريب
-    # حساب EMA200 الحقيقي
     k = 2 / (200 + 1)
     ema = closes[0]
     for price in closes[1:]:
@@ -173,7 +165,6 @@ def analyze_pair(df_4h: pd.DataFrame, df_1d: pd.DataFrame, symbol: str) -> dict 
     if len(key_levels) < 3:
         return None
 
-    # ── فلتر اتجاه السوق العام ──
     bias = get_market_bias(closes_1d)
 
     lookback = 30
@@ -191,7 +182,6 @@ def analyze_pair(df_4h: pd.DataFrame, df_1d: pd.DataFrame, symbol: str) -> dict 
     dist_to_top    = abs(current_price - channel_top) / channel_top
 
     # ══════════ LONG — قاع القناة ══════════
-    # يُسمح فقط إذا السوق صاعد أو محايد
     if bias in ("BULLISH", "NEUTRAL") and dist_to_bottom <= 0.05:
         buy_low, buy_high = get_buy_zone(current_price, key_levels)
         if buy_low:
@@ -217,7 +207,6 @@ def analyze_pair(df_4h: pd.DataFrame, df_1d: pd.DataFrame, symbol: str) -> dict 
                     }
 
     # ══════════ LONG BREAKOUT ══════════
-    # يُسمح فقط إذا السوق صاعد أو محايد
     if bias in ("BULLISH", "NEUTRAL"):
         x_prev = lookback - 2
         channel_top_now  = channel_down["upper_slope"] * x_now  + channel_down["high_intercept"]
@@ -253,8 +242,7 @@ def analyze_pair(df_4h: pd.DataFrame, df_1d: pd.DataFrame, symbol: str) -> dict 
                             "market_bias":      bias,
                         }
 
-    # ══════════ SHORT — قمة القناة الهابطة ══════════
-    # يُسمح فقط إذا السوق هابط أو محايد
+    # ══════════ SHORT — قمة القناة ══════════
     if bias in ("BEARISH", "NEUTRAL") and dist_to_top <= 0.05:
         sell_low, sell_high = get_sell_zone(current_price, key_levels)
         if sell_low:
