@@ -19,7 +19,7 @@ async def scan_once(session: aiohttp.ClientSession):
 
     for symbol in pairs:
         try:
-            if is_signal_sent_recently(symbol, hours=96):
+            if is_signal_sent_recently(symbol, hours=168):
                 continue
 
             df_4h = await get_klines(session, symbol, "4h", limit=100)
